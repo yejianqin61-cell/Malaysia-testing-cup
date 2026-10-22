@@ -1,0 +1,2 @@
+execution_id,case_id,executed_at_myt,environment,actual_result,status,evidence_path,defect_id,owner
+EX-001,TC-001,,, ,Not Run,,,Member A

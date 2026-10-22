@@ -1,0 +1,2 @@
+case_id,feature,risk_id,priority,technique,preconditions,input_data,steps,expected_result,owner,status
+TC-001,Example login,R-001,High,Boundary Value Analysis,Test account exists,Example invalid input,Enter boundary value and submit,Validation message is shown,Member A,Not Run
