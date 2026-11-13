@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Admin - tb practice shop</title></head>
+<body style="font-family:sans-serif;max-width:640px;margin:2rem auto">
+<h1>Admin panel</h1>
+<p id="who"></p>
+<table border="1" cellpadding="4"><tr><th>Order</th><th>Customer</th><th>Total</th></tr>
+<tr><td>#1001</td><td>alice@example.test</td><td>RM 25.00</td></tr></table>
+<script>
+// seeded bug: no role check - any signed-in (or anonymous) visitor can open this page by URL
+document.getElementById('who').textContent = 'Signed in as: ' + (localStorage.getItem('email') || '(nobody)') + ' / role ' + (localStorage.getItem('role') || 'none');
+</script>
+</body></html>

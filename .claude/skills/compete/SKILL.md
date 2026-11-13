@@ -8,6 +8,7 @@ Tester A:
 1. If `run/config.json` is missing or points elsewhere, ask the human to run `./tb init <SUT_URL>` (allowed hosts are their decision). Make sure `./tb chrome` is running.
 2. `/recon`, then `/plan` (GATE 1: wait for approval).
 3. For each own risk, High first: `/design R-xx`, then `/execute R-xx`. Between risks run one `/explore` charter on the riskiest area.
+   If recon found roles and the human has a second account: run `/roles` on the riskiest privileged area (Tester A owns access control unless the plan says otherwise).
 4. At about 11:30: `/status`. Re-plan the remaining time toward under-tested High risks and Verified-but-unsubmitted defects.
 5. At 12:25: stop executing. `/report` (GATE 3).
 
