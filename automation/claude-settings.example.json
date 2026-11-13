@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./tb:*)",
+      "Bash(./rec:*)",
+      "Bash(node automation/tb.mjs:*)",
+      "Bash(node automation/rec.mjs:*)",
+      "Bash(node automation/run-checks.mjs:*)",
+      "Bash(echo $TB_TESTER)",
+      "Read(run/**)",
+      "Read(automation/out/**)",
+      "Read(competition-day/**)",
+      "Edit(run/**)"
+    ],
+    "deny": [
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Read(.tb/**/auth.json)",
+      "Edit(run/config.json)"
+    ]
+  }
+}

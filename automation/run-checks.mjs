@@ -320,7 +320,7 @@ async function shotsCheck() {
             : `No horizontal overflow; title "${o.title.slice(0, 60)}"`;
         } catch (e) { obs = `Load/screenshot ERROR: ${e.message.split('\n')[0]}`; }
         console.log(`  shot ${bName}/${vp.name} ${redact(url.href)}: ${obs.slice(0, 70)}`);
-        addRow('Compatibility / responsive',
+        addRow(vp.mobile ? 'Responsive' : 'Compatibility',
           `${redact(url.href)} at ${vp.width}x${vp.height} (${vp.name})`,
           `${bName} ${env[bName]}, ${vp.width}x${vp.height}${vp.mobile && bName === 'chromium' ? ', mobile emulation (touch, DPR 3)' : ''}`,
           'Full-page screenshot + automatic horizontal-overflow check. Compare screenshots across browsers/viewports manually for layout defects.',
@@ -372,7 +372,7 @@ function writeOutputs(startedAt, errorCount) {
     `Status: RAW OBSERVATIONS. Not yet reviewed. Fields marked [REVIEW] must be filled by a tester. Nothing here is a confirmed defect until reproduced manually.`,
     `Paste-safe: URLs have query strings redacted; no cookies/headers/bodies are included.`,
     ``,
-    ...['Performance', 'Accessibility', 'Compatibility / responsive', 'Reliability'].flatMap((cat) => {
+    ...['Performance', 'Accessibility', 'Compatibility', 'Responsive', 'Reliability'].flatMap((cat) => {
       const rs = rows.filter((r) => r.category === cat);
       if (!rs.length) return [];
       return [`## ${cat}`, ...rs.map((r) => `- ${r.nfr_id} ${r.scenario}: ${r.observation_units}`), ''];
