@@ -1,0 +1,4 @@
+node_modules/
+out/
+# Login state contains session tokens - never commit or paste into AI
+auth*.json

@@ -80,6 +80,25 @@ Template: {{paste 02-summary-report.md}}
 Data: risk list {{ }}; execution counts {{ }}; defect list {{ID, title, severity}}; non-functional notes {{ }}; not tested {{ }}; AI log {{ }}.
 
 ---------------------------------------------------------------
+## P10 - Triage automated check output   (Tier B only, minute 35-60)
+---------------------------------------------------------------
+Below is the raw output of our read-only automated checks (Playwright + axe-core) against the SUT. It contains observations only; nothing is reproduced or confirmed yet.
+{{paste automation/out/<run>/summary.md}}
+Task:
+1. Group observations into: (a) defect candidates worth manual reproduction, (b) non-functional findings for the report, (c) noise / not a defect (third-party scripts, expected 401 before login, test-tool artefacts) - with reason.
+2. For each (a): which manual steps would confirm it, and a provisional severity with one-line justification.
+3. For each (b): suggest baseline_expectation with its basis (requirement, WCAG criterion, Core Web Vitals guideline, convention) and user_impact in one line.
+4. Flag any number that looks unreliable (e.g. large spread between runs) and say what to re-measure.
+Do not claim root cause. Do not upgrade an automated observation to a confirmed defect.
+
+---------------------------------------------------------------
+## P11 - Tidy a recorded smoke test   (Tier B only)
+---------------------------------------------------------------
+Here is Playwright code recorded with codegen for test case {{TC-xx: title}}. Expected result: {{ }}.
+{{paste code - no passwords, no auth.json}}
+Rewrite it as one @playwright/test test titled "{{TC-xx title}}": use role/label locators, page.goto('./') for the start page, add expect() assertions for the expected result, no fixed waits, no new actions beyond what was recorded. Output code only.
+
+---------------------------------------------------------------
 ## P9 - Final English polish   (any report)
 ---------------------------------------------------------------
 Polish the English of the text below for a professional test report. Keep all facts, numbers and IDs unchanged. Make titles specific. Do not add content.

@@ -1,0 +1,10 @@
+{
+  "url": "https://REPLACE-WITH-SUT-URL/",
+  "pages": ["./", "login", "products", "cart"],
+  "checks": ["perf", "a11y", "shots", "errors"],
+  "runs": 3,
+  "throttle": "none",
+  "browsers": ["chromium", "firefox"],
+  "delay": 1500,
+  "max-loads": 80
+}
