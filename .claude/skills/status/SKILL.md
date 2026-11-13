@@ -2,7 +2,7 @@
 name: status
 description: Mid-point check (about 11:30) and any 30-minute sync - coverage gaps, unsubmitted defects, and the best use of the remaining time.
 ---
-1. `./rec stats`, `./rec list risks`, `./rec list cases`, `./rec list defects`.
+1. `./board list --all`, `./rec stats`, `./rec list risks`, `./rec list cases`, `./rec list defects`. Open tasks nobody has claimed for over 20 minutes and blocked tasks need a decision.
 2. Report to the human in at most 8 lines:
    - time left until the 12:25 execution stop
    - own High risks: executed / designed cases, and which are under-tested

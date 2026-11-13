@@ -18,7 +18,7 @@ All submitted text is in English and uses ISTQB terms.
 5. Never fabricate. Every status, number and defect must trace to a `tb` action (seq number / screenshot) or a `rec` row. If you did not observe it, it is "unknown" or "Not Run".
 6. You never submit anything to the official platform. Humans submit; you prepare paste-ready text.
 7. Keep records through `./rec` only (it validates the fields). Log every AI-produced artefact with `./rec add ailog`. The judges read that log as evidence of smart AI use.
-8. Outside your owned risks, coordinate through the human. Do not test B's risks as A, or the other way round.
+8. Work only on tasks you claimed on the shared board (`./board next` / `./board claim`). Publish new work with `./board add` instead of silently testing another area.
 
 ## Tools (run `./tb help`, `./rec` for full usage)
 - `./tb snap` lists interactive elements with refs `e1..`. Refs change after the page changes, so re-snap before acting.
@@ -32,6 +32,11 @@ All submitted text is in English and uses ISTQB terms.
 - `node automation/run-checks.mjs --url <SUT> --pages "./,<path>"` runs batch performance, axe, cross-browser and mobile checks (logged-out pages, or add `--auth .tb/$TB_TESTER/auth.json` after `./tb save-auth`).
 - `./rec add|update|list|get|stats|copy <risks|cases|defects|nfr|ailog>`. IDs are automatic: TC-A01, D-A01, NF-A01; R-01 is shared.
 
+## Team board and result sync (A <-> B)
+- Tasks are GitHub Issues of this private repo, labelled with the run id (date + SUT host, identical on both machines). After GATE 1, A publishes them (`/plan`); then both agents loop: `./board next`, do the task, `./board done <#> "..."`. Claims are race-safe (the earliest CLAIM comment wins); own suggestions first, then work stealing.
+- `./board sync` pushes run/<T> records and bug evidence packs to branch `results/<run>` (a separate worktree in .tb/results; the working tree is untouched). `./board collect` pulls the other tester's data into run/<other>/. A collects before `/report`; B collects once to get risks.csv.
+- Each Verified defect has an evidence pack `run/<T>/bugs/<D-id>/evidence-pack.md` (location, defect_type, severity, steps, independent repros, DevTools, screenshots, report). `./rec pack <D-id>|--all`.
+
 ## Parallel workers (sub-agents)
 - `./tb fork <n>` (max 4) starts worker browsers w1..wn that inherit your login and page. Every command for a worker is `./tb --as w1 ...`. Each worker has its own refs, action log and evidence files (`A-w1-*.png`). `./tb workers [stop]`.
 - `/recon` dispatches one `recon-worker` sub-agent per area in ONE message, so they run in parallel. `/bug` dispatches two `repro-worker` sub-agents for independent reproductions while you keep testing.
@@ -43,11 +48,10 @@ All submitted text is in English and uses ISTQB terms.
 | MYT | Phase | Skill |
 |---|---|---|
 | 10:00-10:10 | Recon: breadth-first tour, feature map, rules seen on screen | `/recon` |
-| 10:10-10:15 | Risks + test plan draft. **GATE 1: humans approve and submit the plan** | `/plan` |
-| 10:15-10:35 | Design cases for own High risks | `/design R-xx` |
-| 10:35-12:25 | Execute, explore, bug pipeline; non-functional in parallel; access checks if roles exist; sync with human every 30 min | `/execute`, `/explore`, `/bug`, `/nfr`, `/roles` |
+| 10:10-10:15 | Risks + test plan draft. **GATE 1: humans approve and submit the plan**; A publishes the task board | `/plan` |
+| 10:15-12:25 | Task loop for both agents: `board next` -> design/execute/explore/nfr/roles -> `/bug` -> `board done` + `board sync`; sync with human every 30 min | `/design`, `/execute`, `/explore`, `/bug`, `/nfr`, `/roles` |
 | 11:30 | Mid-point check | `/status` |
-| 12:25-12:45 | Summary report from `rec stats` only. **GATE 3: humans review numbers** | `/report` |
+| 12:25-12:45 | A: `board collect` + `rec pack --all`, summary report from both testers' data. **GATE 3: humans review numbers** | `/report` |
 | 12:45-13:00 | Buffer. All submissions done by 12:50 | - |
 `/compete` runs the whole sequence and pauses only at the gates.
 
