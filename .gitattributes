@@ -1,0 +1,6 @@
+# POSIX wrappers must keep LF or "#!/bin/sh" breaks in Git Bash
+tb text eol=lf
+rec text eol=lf
+*.sh text eol=lf
+# Windows wrappers keep CRLF
+*.cmd text eol=crlf

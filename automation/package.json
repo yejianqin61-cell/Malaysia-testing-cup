@@ -1,0 +1,17 @@
+{
+  "name": "teayeah-tier-b-checks",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Tier B generic, low-rate, read-only browser checks. Use ONLY if the briefing confirms automation is allowed.",
+  "type": "module",
+  "scripts": {
+    "checks": "node run-checks.mjs",
+    "smoke": "playwright test",
+    "codegen": "playwright codegen",
+    "report": "playwright show-report out/smoke-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
+    "@playwright/test": "1.65.0"
+  }
+}
