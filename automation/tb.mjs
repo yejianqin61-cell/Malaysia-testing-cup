@@ -11,13 +11,19 @@
 import { chromium } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const T = (process.env.TB_TESTER || 'A').toUpperCase();
+// `--as <name>` anywhere on the command line selects another identity (same as TB_ROLE=<name>):
+//   roles (admin, user2) = a different user;  workers (w1, w2, ...) = parallel browsers of the same user (tb fork)
+const asIdx = process.argv.indexOf('--as');
+let AS = '';
+if (asIdx > 1) { AS = process.argv[asIdx + 1] || ''; process.argv.splice(asIdx, 2); }
 // Optional second identity (e.g. TB_ROLE=admin or TB_ROLE=user2): own browser, port, login, log
-const ROLE = (process.env.TB_ROLE || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const ROLE = (AS || process.env.TB_ROLE || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const ID = ROLE ? `${T}-${ROLE}` : T;
 const roleOffset = ROLE ? 10 + 2 * ([...ROLE].reduce((a, c) => a + c.charCodeAt(0), 0) % 40) : 0;
 const PORT = Number(process.env.TB_PORT || (T === 'B' ? 9223 : 9222) + roleOffset);
@@ -72,6 +78,9 @@ Setup   (second identity for permission tests: TB_ROLE=admin ./tb chrome, then T
   tb init <SUT_URL> [--allow host2,host3]   write run/config.json (allowed hosts, guard words)
   tb chrome [--headless]                   start the browser + event recorder (keep running)
   tb status | tb stop
+  tb fork <n> [--headed]                   start n worker browsers (w1..wn) that inherit this login and page
+  tb workers [stop]                        list (or stop) the worker browsers
+  Any command takes --as <name> to act as a worker (w1) or role (admin):  tb --as w1 snap
 
 Look
   tb snap [--text] [--all]                 page summary + interactive elements with refs (e1, e2, ...)
@@ -118,9 +127,12 @@ if (cmd === 'init') {
 if (cmd === 'chrome') {
   const c = cfg(); if (!c) die('run tb init <SUT_URL> first');
   try { await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json(); die(`a browser is already listening on ${PORT} (identity ${ID}). Use tb stop first.`); } catch { /* free */ }
+  // Never resume an old session (it could be another site): mark the last exit as clean, then close restored tabs
+  const prefs = path.join(RT, 'profile', 'Default', 'Preferences');
+  try { const pj = JSON.parse(fs.readFileSync(prefs, 'utf8')); pj.profile = { ...(pj.profile || {}), exit_type: 'Normal', exited_cleanly: true }; pj.session = { ...(pj.session || {}), restore_on_startup: 5 }; fs.writeFileSync(prefs, JSON.stringify(pj)); } catch { /* first run */ }
   const ctx = await chromium.launchPersistentContext(path.join(RT, 'profile'), {
     headless: Boolean(flags.headless), viewport: null,
-    args: [`--remote-debugging-port=${PORT}`, '--window-size=1440,960', '--no-first-run', '--no-default-browser-check'],
+    args: [`--remote-debugging-port=${PORT}`, '--window-size=1440,960', '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--disable-session-crashed-bubble'],
   });
   const ev = (type, page, data) => appendJsonl(EVENTS, { ts: Date.now(), time: myt(), type, page: page ? redact(page.url()) : null, ...data });
   let appliedVp = null;
@@ -147,8 +159,24 @@ if (cmd === 'chrome') {
   });
   ctx.on('page', (p) => { wire(p); ev('newtab', p, { text: 'new tab opened' }); });
   for (const p of ctx.pages()) wire(p);
-  const first = ctx.pages()[0] || (await ctx.newPage());
-  await first.goto(c.sutUrl).catch((e) => ev('nav-error', first, { text: e.message.split('\n')[0] }));
+  // --auth <file>: inherit a login (cookies + localStorage + sessionStorage) captured by tb save-auth / tb fork
+  if (flags.auth) {
+    const st = readJson(String(flags.auth), null);
+    if (!st) die(`cannot read auth file ${flags.auth}`);
+    if (st.cookies?.length) await ctx.addCookies(st.cookies).catch((e) => ev('tb-internal', null, { text: 'addCookies: ' + e.message.slice(0, 120) }));
+    await ctx.addInitScript((seed) => {
+      try {
+        const o = (seed.origins || []).find((x) => x.origin === location.origin);
+        if (o && !localStorage.getItem('__tb_seeded')) { for (const kv of o.localStorage || []) localStorage.setItem(kv.name, kv.value); localStorage.setItem('__tb_seeded', '1'); }
+        const ss = (seed.sessionStorage || {})[location.origin];
+        if (ss && !sessionStorage.getItem('__tb_seeded')) { for (const [k, v] of Object.entries(ss)) sessionStorage.setItem(k, v); sessionStorage.setItem('__tb_seeded', '1'); }
+      } catch {}
+    }, st);
+  }
+  const first = await ctx.newPage();
+  for (const p of ctx.pages()) if (p !== first) await p.close().catch(() => {});
+  const startUrl = typeof flags.start === 'string' && hostAllowed(flags.start) ? flags.start : c.sutUrl;
+  await first.goto(startUrl).catch((e) => ev('nav-error', first, { text: e.message.split('\n')[0] }));
   setState({ active: 0, viewport: null });
   // apply viewport changes requested by `tb viewport` (emulation must live in this long-running session)
   const timer = setInterval(async () => {
@@ -217,6 +245,20 @@ if (cmd === 'stop') {
   catch { console.log(`nothing running on ${PORT}`); }
   process.exit(0);
 }
+
+async function saveAuth(ctx, page, f) {
+  const st = await ctx.storageState();
+  const ss = await page.evaluate(() => { const o = {}; for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); if (k !== '__tb_seeded') o[k] = sessionStorage.getItem(k); } return o; }).catch(() => ({}));
+  st.sessionStorage = { [new URL(page.url()).origin]: ss };
+  // storageState() misses localStorage on CDP-connected contexts: read it from the page itself
+  const ls = await page.evaluate(() => { const o = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== '__tb_seeded') o.push({ name: k, value: localStorage.getItem(k) }); } return o; }).catch(() => []);
+  const origin = new URL(page.url()).origin;
+  st.origins = (st.origins || []).filter((o) => o.origin !== origin).concat(ls.length ? [{ origin, localStorage: ls }] : []);
+  writeJson(f, st);
+}
+const workerIds = () => (fs.existsSync(path.join(ROOT, '.tb')) ? fs.readdirSync(path.join(ROOT, '.tb')).filter((d) => d.startsWith(T + '-w')).map((d) => d.slice(T.length + 1)) : []);
+const portOf = (role) => (T === 'B' ? 9223 : 9222) + 10 + 2 * ([...role].reduce((a, c) => a + c.charCodeAt(0), 0) % 40);
+const alive = async (port) => { try { await (await fetch(`http://127.0.0.1:${port}/json/version`)).json(); return true; } catch { return false; } };
 
 // ---------------- snapshot ----------------
 async function snapshot(page, { text = false, all = false } = {}) {
@@ -401,6 +443,42 @@ switch (cmd) {
     console.log(t.replace(/\n{3,}/g, '\n\n').slice(0, 12000));
     await done();
   }
+  case 'fork': {
+    if (ROLE) die('run tb fork from your main identity (without --as)');
+    const n = Math.min(Number(pos[0]) || 2, 4);
+    const { ctx, page } = await connect();
+    const authFile = path.join(RT, 'fork-auth.json');
+    await saveAuth(ctx, page, authFile);
+    const start = page.url();
+    await browser.close().catch(() => {});
+    const started = [];
+    for (let i = 1; i <= n; i++) {
+      const w = `w${i}`; const port = portOf(w);
+      if (await alive(port)) { started.push(`${w}: already running on ${port}`); continue; }
+      const logDir = path.join(ROOT, '.tb', `${T}-${w}`); fs.mkdirSync(logDir, { recursive: true });
+      const out = fs.openSync(path.join(logDir, 'daemon.log'), 'a');
+      const args = [fileURLToPath(import.meta.url), 'chrome', '--as', w, '--auth', authFile, '--start', start, ...(flags.headed ? [] : ['--headless'])];
+      spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, TB_TESTER: T, TB_ROLE: '', MSYS_NO_PATHCONV: '1' }, windowsHide: true }).unref();
+      started.push(w);
+    }
+    for (let k = 0; k < 40; k++) { const ok = await Promise.all(started.filter((s) => !s.includes(':')).map((w) => alive(portOf(w)))); if (ok.every(Boolean)) break; await sleep(500); }
+    for (const w of started) { const id = w.split(':')[0]; console.log(`${id}: ${(await alive(portOf(id))) ? 'running' : 'NOT running (see .tb/' + T + '-' + id + '/daemon.log)'} on port ${portOf(id)}, same login, start page ${redact(start)}`); }
+    console.log(`Use:  ./tb --as w1 snap   (each worker has its own browser, refs, log and evidence files ${T}-w1-*.png)`);
+    console.log('Workers share the SAME account: never let two workers change the same cart/order/profile at once.');
+    setTimeout(() => process.exit(0), 300);
+    break;
+  }
+  case 'workers': {
+    const ids = workerIds();
+    if (!ids.length) { console.log('no workers (start with: tb fork <n>)'); process.exit(0); }
+    for (const w of ids) {
+      const port = portOf(w); const up = await alive(port);
+      if (pos[0] === 'stop' && up) { try { const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 3000 }); const s = await b.newBrowserCDPSession(); await s.send('Browser.close'); } catch {} }
+      const acts = readJsonl(path.join(RUN, T, `actions-${w}.jsonl`)); const last = acts[acts.length - 1];
+      console.log(`${w}: ${pos[0] === 'stop' ? (up ? 'stopped' : 'not running') : up ? 'running' : 'stopped'} port ${port}; ${acts.filter((a) => a.cmd !== 'mark').length} actions${last ? `; last ${last.time} ${last.cmd} ${last.urlAfter || last.value || ''}` : ''}`);
+    }
+    process.exit(0);
+  }
   case 'find': {
     if (!pos[0]) die('usage: tb find "<visible text>"');
     const { page } = await connect();
@@ -463,7 +541,7 @@ switch (cmd) {
     console.log(`viewport: ${vp ? vp.width + 'x' + vp.height + ' (size only; no touch/UA emulation - use run-checks.mjs for that)' : 'window size'}`); process.exit(0);
   }
   case 'save-auth': {
-    const { ctx } = await connect(); const f = path.join(RT, 'auth.json'); await ctx.storageState({ path: f });
+    const { ctx, page } = await connect(); const f = path.join(RT, 'auth.json'); await saveAuth(ctx, page, f);
     console.log(`saved ${rel(f)} (contains session tokens: never paste or share)`); await done();
   }
 

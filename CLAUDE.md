@@ -31,6 +31,13 @@ All submitted text is in English and uses ISTQB terms.
 - `node automation/run-checks.mjs --url <SUT> --pages "./,<path>"` runs batch performance, axe, cross-browser and mobile checks (logged-out pages, or add `--auth .tb/$TB_TESTER/auth.json` after `./tb save-auth`).
 - `./rec add|update|list|get|stats|copy <risks|cases|defects|nfr|ailog>`. IDs are automatic: TC-A01, D-A01, NF-A01; R-01 is shared.
 
+## Parallel workers (sub-agents)
+- `./tb fork <n>` (max 4) starts worker browsers w1..wn that inherit your login and page. Every command for a worker is `./tb --as w1 ...`. Each worker has its own refs, action log and evidence files (`A-w1-*.png`). `./tb workers [stop]`.
+- `/recon` dispatches one `recon-worker` sub-agent per area in ONE message, so they run in parallel. `/bug` dispatches two `repro-worker` sub-agents for independent reproductions while you keep testing.
+- Sub-agents stream findings with `./rec note <topic> "<finding>" --by w1`. `rec` uses a file lock, so parallel writes are safe, and it rewrites **run/LIVE.md** (defect queue, reproductions in progress, notes, recent actions, numbers) after every write. The humans watch that file.
+- Workers share ONE account: never let two of them change the same cart, order, profile or post at the same time. For stateful defects, reproduce one at a time or use a second account (`/roles`).
+- Parallel work spends usage faster. Use at most 4 workers, and stop them when idle.
+
 ## Timeline (check the clock with `./rec stats`; it prints MYT)
 | MYT | Phase | Skill |
 |---|---|---|
