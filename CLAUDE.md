@@ -26,6 +26,8 @@ All submitted text is in English and uses ISTQB terms.
 - Every action prints new URL, visible messages, new errors and a screenshot path. Read them: they are your oracle.
 - `./tb find "<text>"` gives refs to custom widgets or list rows. `./tb js "<expr>"` is read-only inspection.
 - `./tb perf`, `./tb a11y`, `./tb viewport mobile|desktop` for non-functional checks in the current login state.
+- **Four oracles, use all of them**: (1) visible text and messages; (2) **screenshots**: `tb snap` is text-only, so READ the png for anything visual and whenever snap prints `Layout warnings`; (3) **API**: the `api:` line after each action and `./tb net --mark ...` show request and response bodies, so compare what the server returned with what the UI shows; (4) health: `events:` (console errors, HTTP 4xx/5xx).
+- Second identity for role and access checks: `TB_ROLE=<role> ./tb ...` (its own browser, login and log). See `/roles`.
 - `node automation/run-checks.mjs --url <SUT> --pages "./,<path>"` runs batch performance, axe, cross-browser and mobile checks (logged-out pages, or add `--auth .tb/$TB_TESTER/auth.json` after `./tb save-auth`).
 - `./rec add|update|list|get|stats|copy <risks|cases|defects|nfr|ailog>`. IDs are automatic: TC-A01, D-A01, NF-A01; R-01 is shared.
 
@@ -35,7 +37,7 @@ All submitted text is in English and uses ISTQB terms.
 | 10:00-10:10 | Recon: breadth-first tour, feature map, rules seen on screen | `/recon` |
 | 10:10-10:15 | Risks + test plan draft. **GATE 1: humans approve and submit the plan** | `/plan` |
 | 10:15-10:35 | Design cases for own High risks | `/design R-xx` |
-| 10:35-12:25 | Execute, explore, bug pipeline; non-functional in parallel; sync with human every 30 min | `/execute`, `/explore`, `/bug`, `/nfr` |
+| 10:35-12:25 | Execute, explore, bug pipeline; non-functional in parallel; access checks if roles exist; sync with human every 30 min | `/execute`, `/explore`, `/bug`, `/nfr`, `/roles` |
 | 11:30 | Mid-point check | `/status` |
 | 12:25-12:45 | Summary report from `rec stats` only. **GATE 3: humans review numbers** | `/report` |
 | 12:45-13:00 | Buffer. All submissions done by 12:50 | - |
@@ -45,6 +47,9 @@ All submitted text is in English and uses ISTQB terms.
 - GATE 1: plan and risk list. Wait for "approved" before designing.
 - GATE 2: every defect you set to Verified goes into the human's submission queue (`run/$TB_TESTER/bugs/D-xx.md`). **Do not wait**: tell the human in one line and keep testing. The human submits, then you record `platform_id` and set status Submitted.
 - GATE 3: final report numbers.
+
+## Humans also test
+Between gates your human runs their own exploratory sessions on what you are weak at (visual polish, usability feel, business plausibility, iframes or canvas, captchas). If they report a problem, run it through `/bug` like your own. In every `/status`, suggest one human charter.
 
 ## Style
 Short progress lines to the human: what you are testing, what you found, what you need. No long essays during execution.

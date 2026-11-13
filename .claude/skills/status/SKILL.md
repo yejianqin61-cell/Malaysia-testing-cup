@@ -10,5 +10,6 @@ description: Mid-point check (about 11:30) and any 30-minute sync - coverage gap
    - Suspected defects older than 15 minutes (decide: reproduce now or drop)
    - Non-functional rows still unreviewed
    - the 3 most valuable next actions, in order
+   - one exploratory charter for the HUMAN, covering what you are weak at: visual polish, usability feel, business plausibility, things inside iframes or canvas. Example: "Explore the checkout on your phone-sized window to discover layout and wording problems (10 min)".
 3. Update risk coverage where it is now clear: `./rec update risks R-0x '{"coverage":"Tested in depth|Smoke only|Not tested"}'`.
 4. `./rec add ailog '{"prompt_id":"P7","activity":"Mid-point status check",...}'`.

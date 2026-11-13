@@ -6,7 +6,7 @@ Invalid or enhancement-type reports lose points, so be your own harshest reviewe
 
 1. Triage before spending time:
    - Is there a basis for the expected behaviour (requirement, on-screen rule, clear convention)? If it is only "would be nicer", it is an enhancement: drop it (note it for the report's suggestions).
-   - Could it be our own data, timing, network, the blocked out-of-scope navigation, or our viewport emulation? Rule these out.
+   - Could it be our own data, timing, network, the blocked out-of-scope navigation, or our viewport emulation? Rule these out. A visual defect seen only through `tb viewport` should be re-checked with `node automation/run-checks.mjs --checks shots` (real mobile emulation) before it is called a defect.
    - Duplicate? `./rec list defects --all`, and ask the human whether the other tester has it (one line).
 2. Log it right away: `./rec add defects '{"title":"[Feature] what is wrong when/after condition","feature":"...","severity":"...","steps":"(pending)","expected":"...","actual":"...","evidence":"<shot path>","case_id":"...","risk_id":"...","repro":"1/1"}'` (status is Suspected).
 3. Reproduce twice from a clean start, as separate marks:
@@ -15,7 +15,8 @@ Invalid or enhancement-type reports lose points, so be your own harshest reviewe
 4. Build the report from evidence, not memory:
    - steps: `./tb steps --mark "<D-id> repro 2"` (exact values, button names)
    - console/HTTP: `./tb errors --mark "<D-id> repro 2"`
-   - final screenshot: `./tb shot <D-id>-actual`
+   - API evidence when relevant: `./tb net --mark "<D-id> repro 2"`. Quote the exact field ("API returns price 45.0, UI shows RM 40.00"). Never paste tokens; the tool redacts known secret fields, but check anyway.
+   - final screenshot: `./tb shot <D-id>-actual`. For a visual defect, READ the screenshot and describe exactly what is wrong and where. A Layout warning alone is never evidence.
    Severity (impact on user/business): Critical = core function unusable, data loss, money or security impact, no workaround; High = major function wrong, hard workaround; Medium = partly wrong, workaround exists; Low = cosmetic. Priority separately (P1/P2/P3). No root-cause claims ("Root cause not investigated").
 5. If reproduced at least 2 times: `./rec update defects <D-id> '{"status":"Verified","repro":"2/2","steps":"...","evidence":"..."}'`.
    If it is not reproducible or not a defect: status "Dropped-not a bug" with the reason in actual.
