@@ -26,6 +26,7 @@
 <p class="promo">Free shipping for orders above RM 50.00 this week only</p>
 <div id="catalog"></div>
 <div class="actions"><button id="pay">Place order</button><button id="clear">Delete cart</button></div>
+<p><label for="coupon">Coupon</label> <input id="coupon" name="coupon"> <button id="apply">Apply coupon</button> <span id="couponmsg"></span></p>
 <p><a href="admin.html" id="adminlink" hidden>Admin panel</a></p>
 <p id="status" role="status"></p>
 <script>
@@ -46,6 +47,14 @@ function render() {
   document.getElementById('total').textContent = (items.reduce((s, x) => s + x, 0) * mult).toFixed(2);
 }
 document.getElementById('qty').addEventListener('input', render);
+// seeded bug: coupon endpoint is missing (404 HTML) and the page crashes parsing it; no message is shown to the user
+document.getElementById('apply').addEventListener('click', () => {
+  const c = document.getElementById('coupon').value;
+  fetch('api/coupon?code=' + encodeURIComponent(c) + '&cart=' + items.length).then(r => r.text()).then(t => {
+    const d = JSON.parse(t);
+    document.getElementById('couponmsg').textContent = 'Discount ' + d.discount.toFixed(2);
+  });
+});
 document.getElementById('login').addEventListener('submit', (e) => {
   e.preventDefault();
   const em = document.getElementById('email').value;

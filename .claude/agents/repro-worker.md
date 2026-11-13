@@ -23,11 +23,12 @@ Procedure:
    - `./tb --as <id> steps --mark "<D-id> repro <id>"`
    - `./tb --as <id> errors --mark "<D-id> repro <id>"`
    - `./tb --as <id> net --mark "<D-id> repro <id>"` when data or numbers are involved. Quote the exact field.
+   - `./tb --as <id> devtools --mark "<D-id> repro <id>" --save <D-id>`: the F12-style Console + Network evidence file.
 4. Stream the outcome right away: `./rec note <D-id> "REPRODUCED|NOT REPRODUCED by <id>: <exact actual result>; shot <path>" --by <id>`
 
 Final answer to the lead (plain text):
 - RESULT: REPRODUCED or NOT REPRODUCED (or BLOCKED, with the reason)
 - STEPS: the numbered steps exactly as `tb steps` printed them
 - ACTUAL: exact text, numbers or what the screenshot shows
-- EVIDENCE: screenshot path(s); errors; API field values
+- EVIDENCE: screenshot path(s); the devtools file path; the decisive Console/Network lines verbatim; API field values
 - CAVEATS: shared-state interference, timing, anything that makes this run weaker

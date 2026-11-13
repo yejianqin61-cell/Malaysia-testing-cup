@@ -27,6 +27,7 @@ All submitted text is in English and uses ISTQB terms.
 - `./tb find "<text>"` gives refs to custom widgets or list rows. `./tb js "<expr>"` is read-only inspection.
 - `./tb perf`, `./tb a11y`, `./tb viewport mobile|desktop` for non-functional checks in the current login state.
 - **Four oracles, use all of them**: (1) visible text and messages; (2) **screenshots**: `tb snap` is text-only, so READ the png for anything visual and whenever snap prints `Layout warnings`; (3) **API**: the `api:` line after each action and `./tb net --mark ...` show request and response bodies, so compare what the server returned with what the UI shows; (4) health: `events:` (console errors, HTTP 4xx/5xx).
+- `./tb devtools --mark <label> [--save <D-id>]` prints the F12-style Console + Network evidence for a marked section (source file:line, stack, URL with evidence parameters, status, duration, payload, response). Every Verified defect carries it.
 - Second identity for role and access checks: `TB_ROLE=<role> ./tb ...` (its own browser, login and log). See `/roles`.
 - `node automation/run-checks.mjs --url <SUT> --pages "./,<path>"` runs batch performance, axe, cross-browser and mobile checks (logged-out pages, or add `--auth .tb/$TB_TESTER/auth.json` after `./tb save-auth`).
 - `./rec add|update|list|get|stats|copy <risks|cases|defects|nfr|ailog>`. IDs are automatic: TC-A01, D-A01, NF-A01; R-01 is shared.

@@ -26,7 +26,11 @@ Expected result: <what should happen> (Basis: <requirement / on-screen rule / co
 Actual result: <exactly what happened, with exact message text and numbers>
 Reproducibility: <3/3 attempts>; <also in Firefox 1xx / only in Chrome>
 Impact: <who is affected and how - money, data, blocked journey, trust>
-Evidence: <screenshot name / console error text / failed request and status code>
+DevTools evidence (F12 Console / Network, verbatim):
+  Console: <e.g. [Uncaught] SyntaxError: Unexpected token '<' ... (index-abc.js:1)>
+  Network: <e.g. GET /api/coupon?code=SAVE10&cart=1 -> 404 text/html (12 ms); Response: "Error response ... 404">
+  <or: "No console errors; all requests returned 200" for a silent wrong result>
+Evidence: <screenshot file name; devtools evidence file name>
 Related: <test case ID TC-xx; risk R-0x>
 
 ## Title formula and examples
@@ -49,5 +53,5 @@ Hedging (no root-cause claims): "This suggests that...", "Possibly related to D-
 
 ## Pre-submission checklist (both testers, 30 seconds)
 [ ] Reproduced at least twice   [ ] Not an enhancement   [ ] Not a duplicate (checked Defects sheet)
-[ ] Exact values and messages written   [ ] Severity matches the scale   [ ] Sensitive data removed
+[ ] Exact values and messages written   [ ] DevTools lines quoted (or "no errors" stated)   [ ] Severity matches the scale   [ ] Sensitive data removed
 [ ] Logged in Defects sheet with platform ID after submitting

@@ -49,7 +49,16 @@ const state = () => readJson(STATE, { active: -1, seq: 0, lastTs: 0, dialog: 'di
 const setState = (patch) => writeJson(STATE, { ...state(), ...patch });
 const cfg = () => readJson(CFG_FILE, null);
 const safeHash = (h) => (h && h.length <= 40 && !h.includes('=') ? h : h ? '#[redacted]' : '');
-const redact = (u) => { try { const x = new URL(u); if (!/^https?:$/.test(x.protocol)) return u; return x.origin + x.pathname + (x.search ? '?[redacted]' : '') + safeHash(x.hash); } catch { return String(u).slice(0, 200); } };
+// Keep query parameters as evidence (?priceMin=abc, ?q=_), but redact secret-looking keys, tokens and emails
+const SECRET_PARAM = /^(sig|signature|key|auth|ticket|nonce|access_token|id_token|refresh_token|client_secret)$/i;
+const redactValue = (k, v) => {
+  if (SECRET_KEYS.test(k) || SECRET_PARAM.test(k)) return '[redacted]';
+  if (/^eyJ[\w-]+\.[\w-]+\./.test(v) || /^[A-Za-z0-9_\-+/=]{32,}$/.test(v)) return '[redacted]';
+  if (/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v)) return v.replace(/^[^@]+/, (m) => m[0] + '***');
+  return v.length > 60 ? v.slice(0, 60) + '...' : v;
+};
+const redactQuery = (search, pathname = '') => { if (!search) return ''; if (/callback|oauth|openid|saml|sso/i.test(pathname)) return '?[redacted: auth callback]'; const q = new URLSearchParams(search); const out = []; for (const [k, v] of q) out.push(`${k}=${redactValue(k, v)}`); return out.length ? '?' + out.join('&') : ''; };
+const redact = (u) => { try { const x = new URL(u); if (!/^https?:$/.test(x.protocol)) return u; return x.origin + x.pathname + redactQuery(x.search, x.pathname) + safeHash(x.hash); } catch { return String(u).slice(0, 200); } };
 const rel = (p) => path.relative(ROOT, p).replace(/\\/g, '/');
 const die = (msg, code = 1) => { console.error('ERROR: ' + msg); process.exit(code); };
 const appendJsonl = (f, o) => fs.appendFileSync(f, JSON.stringify(o) + '\n');
@@ -103,6 +112,7 @@ Evidence
   tb mark "<label>"         start a section (e.g. "TC-A03" or "D-A02 repro 1")
   tb steps [--mark <label>] [--from <seq>] [--to <seq>]   reproduction steps from the log
   tb errors [--mark <label>] [--last <n>] [--warnings] console / HTTP / dialog / out-of-scope events
+  tb devtools [--mark <label>] [--save <D-id>] [--warnings] [--all] [--body]   F12-style Console + Network evidence block
   tb net [--mark <label>] [--grep <text>] [--last <n>] [--body]   XHR/fetch calls with request/response bodies
   tb perf [<runs>]          reload current page N times (cache off), median timings
   tb a11y                   axe-core WCAG 2.1 AA scan of the current page state
@@ -138,10 +148,21 @@ if (cmd === 'chrome') {
   let appliedVp = null;
   const applyVp = async (page) => { const v = state().viewport; if (v) await page.setViewportSize(v).catch(() => {}); };
   const wire = (page) => {
-    page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') ev('console.' + m.type(), page, { text: m.text().slice(0, 400) }); });
-    page.on('pageerror', (e) => ev('uncaught', page, { text: String(e.message || e).slice(0, 400) }));
+    page.on('console', (m) => {
+      if (m.type() !== 'error' && m.type() !== 'warning') return;
+      const loc = m.location(); const where = loc && loc.url ? `${redact(loc.url).split('/').slice(-1)[0]}:${(loc.lineNumber ?? 0) + 1}` : '';
+      ev('console.' + m.type(), page, { text: m.text().slice(0, 400), where });
+    });
+    page.on('pageerror', (e) => {
+      const stack = String(e.stack || '').split(/\r?\n/).slice(1, 4).map((l) => l.trim().replace(/https?:\/\/[^\s)]+\/([^/\s)]+)/g, '$1')).join(' | ');
+      ev('uncaught', page, { text: `${e.name || 'Error'}: ${String(e.message || e).slice(0, 300)}`, stack });
+    });
     page.on('response', (r) => {
-      if (r.status() >= 400) ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}` });
+      if (r.status() >= 400) {
+        const rt = r.request().resourceType();
+        if (rt === 'xhr' || rt === 'fetch') ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}`, rtype: rt });
+        else r.text().then((b) => ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}`, rtype: rt, body: redactBody(b.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)) })).catch(() => ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}`, rtype: rt }));
+      }
       recordApi(r, page);
     });
     page.on('requestfailed', (r) => { const f = r.failure()?.errorText || ''; if (!/ERR_ABORTED/.test(f)) ev('requestfailed', page, { text: `${r.method()} ${redact(r.url())} ${f}` }); });
@@ -213,7 +234,8 @@ async function recordApi(r, page) {
     let body = '';
     if (/json|text|xml|form/.test(ct)) body = redactBody((await r.text().catch(() => '')).slice(0, 4000));
     const post = redactBody((req.postData() || '').slice(0, 1500));
-    appendJsonl(NET, { ts: Date.now(), time: myt(), method: req.method(), url: redact(r.url()), host, ext: !hostAllowed(r.url()), path: (() => { try { return new URL(r.url()).pathname; } catch { return r.url(); } })(), status: r.status(), ct, size: Number(r.headers()['content-length'] || body.length || 0), req: post, body, page: redact(page.url()) });
+    let dur = null; try { const t = req.timing(); if (t && t.responseEnd > 0) dur = Math.round(t.responseEnd); } catch {}
+    appendJsonl(NET, { ts: Date.now(), time: myt(), method: req.method(), url: redact(r.url()), host, ext: !hostAllowed(r.url()), path: (() => { try { return new URL(r.url()).pathname; } catch { return r.url(); } })(), status: r.status(), dur, ct, size: Number(r.headers()['content-length'] || body.length || 0), req: post, body, page: redact(page.url()) });
   } catch (e) { try { appendJsonl(EVENTS, { ts: Date.now(), time: myt(), type: 'tb-internal', text: 'api capture: ' + String(e.message).slice(0, 200) }); } catch {} }
 }
 
@@ -650,6 +672,64 @@ switch (cmd) {
     const out = [...grouped.values()].slice(-(Number(flags.last) || 40));
     if (!out.length) console.log('no console errors / HTTP errors / dialogs recorded in range' + (flags.warnings ? '' : ' (add --warnings to include console warnings)'));
     for (const e of out) console.log(`${e.time} ${e.type}${e.status ? ' ' + e.status : ''}${e.n > 1 ? ' (x' + e.n + ')' : ''}: ${e.text.slice(0, 300)}  @ ${e.page}`);
+    process.exit(0);
+  }
+  case 'devtools': {
+    // F12-style evidence (Console + Network) for one marked section, as paste-ready English text
+    const all = readJsonl(ACTIONS);
+    let from = Date.now() - 2 * 60 * 1000; let to = Infinity; let label = 'last 2 minutes';
+    if (flags.mark) {
+      const mi = all.findIndex((r) => r.cmd === 'mark' && r.value === flags.mark);
+      if (mi < 0) die(`mark "${flags.mark}" not found`);
+      from = all[mi].ts; const next = all.slice(mi + 1).find((r) => r.cmd === 'mark'); if (next) to = next.ts; label = flags.mark;
+    }
+    const inRange = (x) => x.ts >= from && x.ts < to + 3000; // late responses of the last step
+    const evs = readJsonl(EVENTS).filter(inRange);
+    const calls = readJsonl(NET).filter(inRange);
+    let ver = 'unknown'; try { ver = (await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json()).Browser; } catch {}
+    const page = (p) => { try { return new URL(p).pathname; } catch { return p || ''; } };
+    const L = [];
+    const t0 = myt(new Date(from)); const t1 = myt(new Date(Math.min(to, Date.now())));
+    L.push(`DevTools evidence - ${label} (${t0} to ${t1.slice(11)} MYT, ${ver}, identity ${ID})`);
+    L.push('Captured automatically through the Chrome DevTools Protocol (same data as the F12 Console and Network tabs). Secret-looking values are redacted.');
+    L.push('', 'Console:');
+    const con = new Map();
+    for (const e of evs.filter((e) => e.type === 'uncaught' || e.type === 'console.error' || (flags.warnings && e.type === 'console.warning'))) {
+      const k = e.type + e.text; const g = con.get(k) || { ...e, n: 0 }; g.n++; con.set(k, g);
+    }
+    if (!con.size) L.push('  (no errors' + (flags.warnings ? ' or warnings' : '') + ')');
+    for (const e of con.values()) {
+      const kind = e.type === 'uncaught' ? 'Uncaught' : e.type.replace('console.', '');
+      L.push(`  [${kind}] ${e.text}${e.where ? '  (' + e.where + ')' : ''}${e.n > 1 ? '  x' + e.n : ''}  - page ${page(e.page)}`);
+      if (e.stack) L.push(`      ${e.stack}`);
+    }
+    L.push('', 'Network (Fetch/XHR, failed requests):');
+    const oneLine = (b, ct) => (/html/.test(ct || '') ? b.replace(/<(script|style)[\s\S]*?<\/>/gi, ' ').replace(/<[^>]+>/g, ' ') : b).replace(/\s+/g, ' ').trim();
+    const lines = [];
+    for (const c of calls) {
+      const bad = c.status >= 400;
+      lines.push({ ts: c.ts, bad, text: [`  ${bad ? '!! ' : ''}${c.method} ${c.url} -> ${c.status} ${c.ct || ''}${c.dur ? ' (' + c.dur + ' ms)' : ''}`,
+        ...(c.req ? [`      Request payload: ${c.req.slice(0, flags.body ? 1500 : 300)}`] : []),
+        ...(c.body && (bad || flags.body || calls.length <= 6) ? [`      Response: ${oneLine(c.body, c.ct).slice(0, flags.body ? 4000 : 400)}`] : [])] });
+    }
+    for (const e of evs.filter((e) => (e.type === 'http' && e.rtype && e.rtype !== 'xhr' && e.rtype !== 'fetch') || e.type === 'requestfailed')) {
+      lines.push({ ts: e.ts, bad: true, text: e.type === 'requestfailed' ? [`  !! FAILED ${e.text}`] : [`  !! ${e.text} -> ${e.status} (${e.rtype})`, ...(e.body ? [`      Response: ${e.body}`] : [])] });
+    }
+    lines.sort((a, b) => a.ts - b.ts);
+    const shown = flags.all ? lines : lines.filter((l) => l.bad).concat(lines.filter((l) => !l.bad).slice(-8)).sort((a, b) => a.ts - b.ts);
+    if (!shown.length) L.push('  (no Fetch/XHR calls; the page may be server-rendered)');
+    for (const l of shown) L.push(...l.text);
+    if (!flags.all && shown.length < lines.length) L.push(`  (${lines.length - shown.length} more successful calls hidden; --all shows them)`);
+    const dlg = evs.filter((e) => e.type === 'dialog' || e.type === 'OUT-OF-SCOPE');
+    if (dlg.length) { L.push('', 'Dialogs / scope:'); for (const e of dlg) L.push(`  ${e.type}: ${e.text}`); }
+    const out = L.join('\n');
+    console.log(out);
+    if (flags.save) {
+      const dir = path.join(RUN, T, 'bugs', 'evidence'); fs.mkdirSync(dir, { recursive: true });
+      const f = path.join(dir, `${String(flags.save).replace(/[^A-Za-z0-9_-]/g, '')}-devtools-${ID}.md`);
+      fs.writeFileSync(f, '```\n' + out + '\n```\n');
+      console.log(`\nsaved ${rel(f)}`);
+    }
     process.exit(0);
   }
   case 'net': {
