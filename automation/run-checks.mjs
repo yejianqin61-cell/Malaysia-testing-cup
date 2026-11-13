@@ -158,8 +158,17 @@ async function load(page, url) {
   loadsDone++;
   const resp = await page.goto(url.href, { waitUntil: 'load', timeout: 60000 });
   try { await page.waitForLoadState('networkidle', { timeout: 5000 }); } catch { /* long-polling sites never idle */ }
+  // single-page apps render after "load": wait (max 6 s) until the body shows something
+  await page.waitForFunction(() => (document.body?.innerText || '').trim().length > 0 || document.querySelector('img,canvas,video,svg'), null, { timeout: 6000 }).catch(() => {});
+  // let web fonts and entry animations (fade-ins) finish before measuring or screenshotting
+  await page.evaluate(() => document.fonts && document.fonts.ready).catch(() => {});
+  await page.waitForTimeout(1500);
+  const finalUrl = page.url();
+  if (redact(finalUrl) !== redact(url.href)) redirects.set(redact(url.href), redact(finalUrl));
   return resp;
 }
+const redirects = new Map();
+const redirNote = (u) => (redirects.has(redact(u.href)) ? ` [REDIRECTED to ${redirects.get(redact(u.href))} - this row measures that page, not the requested one]` : '');
 
 // ---------------- NonFunctional rows (workbook columns) ----------------
 const rows = [];
@@ -223,7 +232,7 @@ async function perfCheck() {
       `Cold page load of ${redact(url.href)}`,
       `Chromium ${env.chromium} (Playwright, ${cfg.headed ? 'headed' : 'headless'}), ${OS}, 1920x1080, network: ${th ? th.label : 'unthrottled local broadband'}`,
       `Navigation Timing + Paint Timing API; new browser context and cache disabled for every run; median of ${cfg.runs}. Lab measurement, not a load test.`,
-      `median load ${sec(s.load)} (runs: ${runs.map((r) => sec(r.load)).join(' / ')}); DCL ${sec(s.dcl)}; FCP ${sec(s.fcp)}; LCP ${sec(s.lcp)}; TTFB ${sec(s.ttfb)}; ${Math.round(s.requests)} requests, ${kb(s.bytes)} transferred${failed ? `; ${failed} run(s) failed to load` : ''}`,
+      `${redirNote(url).trim() ? redirNote(url).trim() + ' ' : ''}median load ${sec(s.load)} (runs: ${runs.map((r) => sec(r.load)).join(' / ')}); DCL ${sec(s.dcl)}; FCP ${sec(s.fcp)}; LCP ${sec(s.lcp)}; TTFB ${sec(s.ttfb)}; ${Math.round(s.requests)} requests, ${kb(s.bytes)} transferred${failed ? `; ${failed} run(s) failed to load` : ''}`,
       cfg.runs, rel(path.join(outDir, 'perf.json')),
       { baseline: '[REVIEW] e.g. LCP <= 2.5 s ("good" per Google Core Web Vitals guideline; not a stated requirement)' });
   }
@@ -248,7 +257,7 @@ async function a11yCheck() {
         `${redact(url.href)} - axe rule "${x.id}"`,
         `Chromium ${env.chromium}, 1920x1080`,
         `axe-core ${r.testEngine.version} automated scan, tags WCAG 2.0/2.1 A+AA. Automated scan finds only part of a11y issues; confirm manually.`,
-        `${x.impact || 'n/a'} impact: ${x.help}. ${x.nodes.length} element(s), e.g. ${x.nodes.slice(0, 2).map((n) => n.target.join(' ')).join(' | ')}. Ref: ${x.helpUrl}`,
+        `${redirNote(url).trim() ? redirNote(url).trim() + ' ' : ''}${x.impact || 'n/a'} impact: ${x.help}. ${x.nodes.length} element(s), e.g. ${x.nodes.slice(0, 2).map((n) => n.target.join(' ')).join(' | ')}. Ref: ${x.helpUrl}`,
         1, rel(file), { baseline: 'WCAG 2.1 Level AA (industry standard; not a stated requirement)' });
     }
     if (!v.length) addRow('Accessibility', `${redact(url.href)} - axe scan`, `Chromium ${env.chromium}, 1920x1080`, `axe-core ${r.testEngine.version} automated scan, WCAG 2.0/2.1 A+AA`, `0 violations (${r.incomplete.length} items need manual review)`, 1, rel(file), { baseline: 'WCAG 2.1 Level AA', verdict: 'No automated violation (manual check still needed)' });
@@ -315,9 +324,9 @@ async function shotsCheck() {
             }
             return { vw, sw, overflow: sw - vw, wide, title: document.title };
           });
-          obs = o.overflow > 1
+          obs = redirNote(url) + (o.overflow > 1
             ? `Horizontal overflow ${o.overflow}px (page ${o.sw}px wide vs viewport ${o.vw}px); elements past right edge: ${o.wide.join(', ') || 'n/a'}`
-            : `No horizontal overflow; title "${o.title.slice(0, 60)}"`;
+            : `No horizontal overflow; title "${o.title.slice(0, 60)}"`);
         } catch (e) { obs = `Load/screenshot ERROR: ${e.message.split('\n')[0]}`; }
         console.log(`  shot ${bName}/${vp.name} ${redact(url.href)}: ${obs.slice(0, 70)}`);
         addRow(vp.mobile ? 'Responsive' : 'Compatibility',
@@ -369,6 +378,7 @@ function writeOutputs(startedAt, errorCount) {
     `Checks: ${cfg.checks.join(', ')} | page loads: ${loadsDone} (sequential, ${cfg.delay} ms apart, read-only) | throttle: ${cfg.throttle}`,
     `Browsers: ${Object.entries(env).map(([k, v]) => `${k} ${v}`).join(', ')}`,
     ``,
+    ...(redirects.size ? [`WARNING: ${redirects.size} page(s) redirected (often to a login page): ${[...redirects].map(([a, b]) => a + ' -> ' + b).join('; ')}. Use --auth with a saved login (tb save-auth) to measure the real pages.`, ''] : []),
     `Status: RAW OBSERVATIONS. Not yet reviewed. Fields marked [REVIEW] must be filled by a tester. Nothing here is a confirmed defect until reproduced manually.`,
     `Paste-safe: URLs have query strings redacted; no cookies/headers/bodies are included.`,
     ``,

@@ -1,2 +1,4 @@
 #!/bin/sh
+# Git Bash would rewrite "/path" arguments into Windows paths for node.exe
+export MSYS_NO_PATHCONV=1
 exec node "$(dirname "$0")/automation/tb.mjs" "$@"

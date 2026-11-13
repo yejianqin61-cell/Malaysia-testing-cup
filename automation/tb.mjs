@@ -178,12 +178,14 @@ async function recordApi(r, page) {
     const req = r.request();
     const type = req.resourceType();
     if (type !== 'xhr' && type !== 'fetch') return;
-    if (!hostAllowed(r.url())) return; // third-party analytics etc.
+    // The SUT's API often lives on another host (e.g. api.example.com, *.railway.app): record it, labelled with its host.
+    const host = (() => { try { return new URL(r.url()).host; } catch { return ''; } })();
+    if (/google-analytics|googletagmanager|doubleclick|facebook\.net|hotjar|sentry\.io|clarity\.ms/.test(host)) return;
     const ct = (r.headers()['content-type'] || '').split(';')[0];
     let body = '';
     if (/json|text|xml|form/.test(ct)) body = redactBody((await r.text().catch(() => '')).slice(0, 4000));
     const post = redactBody((req.postData() || '').slice(0, 1500));
-    appendJsonl(NET, { ts: Date.now(), time: myt(), method: req.method(), url: redact(r.url()), path: (() => { try { return new URL(r.url()).pathname; } catch { return r.url(); } })(), status: r.status(), ct, size: Number(r.headers()['content-length'] || body.length || 0), req: post, body, page: redact(page.url()) });
+    appendJsonl(NET, { ts: Date.now(), time: myt(), method: req.method(), url: redact(r.url()), host, ext: !hostAllowed(r.url()), path: (() => { try { return new URL(r.url()).pathname; } catch { return r.url(); } })(), status: r.status(), ct, size: Number(r.headers()['content-length'] || body.length || 0), req: post, body, page: redact(page.url()) });
   } catch (e) { try { appendJsonl(EVENTS, { ts: Date.now(), time: myt(), type: 'tb-internal', text: 'api capture: ' + String(e.message).slice(0, 200) }); } catch {} }
 }
 
@@ -269,7 +271,9 @@ async function snapshot(page, { text = false, all = false } = {}) {
     const warn = [];
     const vw = document.documentElement.clientWidth;
     if (document.documentElement.scrollWidth > vw + 1) warn.push(`horizontal overflow: page is ${document.documentElement.scrollWidth}px wide in a ${vw}px viewport`);
-    const tagged = [...document.querySelectorAll('[data-tb-ref]')].map((el) => ({ el, r: el.getBoundingClientRect(), ref: el.dataset.tbRef })).filter((x) => x.r.width > 2 && x.r.height > 2);
+    // An element scrolled out of an overflow container (tab strip, carousel) is hidden on purpose, not broken
+    const clipped = (el, r) => { for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) { const cs = getComputedStyle(p); if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') { const pr = p.getBoundingClientRect(); if (r.left < pr.left - 1 || r.right > pr.right + 1 || r.top < pr.top - 1 || r.bottom > pr.bottom + 1) return true; } } return false; };
+    const tagged = [...document.querySelectorAll('[data-tb-ref]')].map((el) => ({ el, r: el.getBoundingClientRect(), ref: el.dataset.tbRef })).filter((x) => x.r.width > 2 && x.r.height > 2 && !clipped(x.el, x.r));
     for (let i = 0; i < tagged.length && warn.length < 10; i++) {
       const a = tagged[i];
       if (a.r.right > vw + 2 && getComputedStyle(a.el).position !== 'fixed') warn.push(`${a.ref} extends past the right edge (${Math.round(a.r.right - vw)}px)`);
@@ -347,7 +351,7 @@ async function act(name, fn, { target = null, value: value0 = null, why = null }
   let info = { title: '', msgs: [] };
   try { const sn = await snapshot(cur); info = { title: sn.title, msgs: sn.msgs }; } catch {}
   await sleep(150);
-  const apis = readEventsFrom(netOffset, NET).map((a) => `${a.method} ${a.path} ${a.status}${a.ct ? ' ' + a.ct.split('/')[1] : ''}`);
+  const apis = readEventsFrom(netOffset, NET).map((a) => `${a.method} ${a.ext ? a.host : ''}${a.path} ${a.status}${a.ct ? ' ' + a.ct.split('/')[1] : ''}`);
   const newEv = readEventsFrom(evOffset).filter((e) => !['nav', 'console.warning'].includes(e.type));
   const tgt = t || target;
   if (tgt?.password) value = '[password]';
@@ -384,7 +388,11 @@ switch (cmd) {
   }
   case 'snap': {
     const { page, index } = await connect();
-    printSnap(await snapshot(page, { text: Boolean(flags.text), all: Boolean(flags.all) }), index);
+    let sn = await snapshot(page, { text: Boolean(flags.text), all: Boolean(flags.all) });
+    // single-page apps may still be rendering: retry up to ~4 s while the page looks empty
+    for (let i = 0; i < 8 && !sn.out.length && sn.text.length < 20; i++) { await sleep(500); sn = await snapshot(page, { text: Boolean(flags.text), all: Boolean(flags.all) }); }
+    if (!sn.out.length && sn.text.length < 20) console.log('NOTE: page still looks empty after 4 s (slow load, canvas UI or iframe). Try tb shot and read it.');
+    printSnap(sn, index);
     await done();
   }
   case 'text': {
@@ -425,7 +433,7 @@ switch (cmd) {
   }
   case 'js': {
     if (!pos[0]) die('usage: tb js "<expression>"');
-    if (/\b(fetch|XMLHttpRequest|sendBeacon|\.submit\(|\.click\(|localStorage\.(set|remove|clear)|sessionStorage\.(set|remove|clear)|document\.cookie\s*=|location\s*=|location\.(assign|replace|href\s*=))/.test(pos[0])) die('tb js is for read-only inspection. Use tb actions to change state.');
+    if (/(\bfetch\s*\(|new\s+XMLHttpRequest|sendBeacon|\.submit\(|\.click\(|localStorage\.(set|remove|clear)|sessionStorage\.(set|remove|clear)|document\.cookie\s*=|location\s*=|location\.(assign|replace|href\s*=))/.test(pos[0])) die('tb js is for read-only inspection. Use tb actions to change state.');
     const { page } = await connect();
     const r = await page.evaluate((e) => { try { const v = (0, eval)(e); return JSON.stringify(v, null, 1)?.slice(0, 4000); } catch (x) { return 'error: ' + x.message; } }, pos[0]);
     appendJsonl(ACTIONS, { seq: state().seq, ts: Date.now(), time: myt(), tester: T, cmd: 'js', value: pos[0].slice(0, 200), inspectOnly: true });
@@ -462,6 +470,7 @@ switch (cmd) {
   // ----- actions -----
   case 'open': {
     if (!pos[0]) die('usage: tb open <url|path>');
+    if (/^[A-Za-z]:[\/]/.test(pos[0])) die(`"${pos[0]}" looks like a Windows path (Git Bash rewrote a /path argument). Use the ./tb wrapper, or write the path without the leading slash.`);
     const u = new URL(pos[0], cfg()?.sutUrl || undefined);
     if (!hostAllowed(u.href)) die(`${u.host} is not in allowed hosts (${cfg().allowHosts.join(', ')}). Edit run/config.json only if the briefing allows it.`);
     await act('open', (p) => p.goto(u.href, { timeout: 30000 }).then(() => null), { value: redact(u.href) });

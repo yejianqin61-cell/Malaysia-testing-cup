@@ -242,7 +242,9 @@ switch (cmd) {
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
     const dest = path.join(ROOT, 'archive', stamp); fs.mkdirSync(dest, { recursive: true });
     if (fs.existsSync(RUN)) fs.renameSync(RUN, path.join(dest, 'run'));
-    for (const t of ['A', 'B']) for (const f of ['events.jsonl', 'state.json']) { const p = path.join(ROOT, '.tb', t, f); if (fs.existsSync(p)) { fs.mkdirSync(path.join(dest, 'tb', t), { recursive: true }); fs.renameSync(p, path.join(dest, 'tb', t, f)); } }
+    const tbDir = path.join(ROOT, '.tb');
+    const ids = fs.existsSync(tbDir) ? fs.readdirSync(tbDir).filter((d) => /^[AB](-[a-z0-9]+)?$/.test(d)) : [];
+    for (const t of ids) for (const f of ['events.jsonl', 'state.json', 'net.jsonl']) { const p = path.join(tbDir, t, f); if (fs.existsSync(p)) { fs.mkdirSync(path.join(dest, 'tb', t), { recursive: true }); fs.renameSync(p, path.join(dest, 'tb', t, f)); } }
     console.log(`archived to ${path.relative(ROOT, dest)}. Browser profiles (logins) kept. Next: ./tb init <SUT_URL>`);
     break;
   }
