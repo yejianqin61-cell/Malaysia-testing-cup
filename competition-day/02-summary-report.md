@@ -1,7 +1,7 @@
 # Summary Test Report - Team TeaYeah
 <!-- MASTER REPORT. Covers all six scoring areas so nothing is lost if the platform only has a bug form and one report field. Fill [FILL]; delete hints in < >. Start filling it at minute 15, not minute 145. Every number must come from the shared workbook. -->
 
-Team: TeaYeah (Ye Jianqin, [FILL])
+Team: TeaYeah (Ye Jianqin, Yuzhe Tee)
 SUT: [FILL name, URL, version]
 Test window: 14 November 2026, 10:00-13:00 MYT
 Environment: [FILL Chrome version], [FILL second browser], Windows [FILL], desktop 1920x1080 and mobile emulation 390x844

@@ -1,7 +1,7 @@
 # Test Plan - Team TeaYeah
 <!-- Pre-filled before the event. On the day, fill every [FILL] and delete the hints in < >. Plain text pastes cleanly into most web forms. -->
 
-Team: TeaYeah (Ye Jianqin, [FILL teammate name])
+Team: TeaYeah (Ye Jianqin, Yuzhe Tee)
 Event: Malaysia Testing Cup 2026 - Malaysia Qualifier
 Test window: 14 November 2026, 10:00-13:00 MYT (180 minutes)
 System under test (SUT): [FILL name, URL, version/build if shown]
@@ -54,7 +54,7 @@ Tools: Chrome DevTools (Console, Network, Lighthouse, device emulation), screens
 
 ## 6. Roles and schedule
 Tester A (Ye Jianqin): [FILL modules], test plan, summary report
-Tester B ([FILL]): [FILL modules], non-functional testing, defect report review
+Tester B (Yuzhe Tee): [FILL modules], non-functional testing, defect report review
 Both: reconnaissance, risk analysis, cross-review of every defect before submission
 
 00-15 min   Reconnaissance, scope, risk analysis, this plan submitted
