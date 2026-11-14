@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>tb practice shop</title>
+<style>body{font-family:sans-serif;max-width:640px;margin:2rem auto}.error{color:#b00}.card{cursor:pointer;border:1px solid #ccc;padding:8px;margin:4px 0}
+.actions{position:relative;height:44px}
+.actions button{position:absolute;top:0;width:140px;height:40px}
+#pay{left:0}#clear{left:150px}
+.promo{width:160px;white-space:nowrap;overflow:hidden;border:1px dashed #999}
+@media (max-width:480px){#clear{left:90px}}  /* seeded visual bug: buttons overlap on phones */
+</style></head>
+<body>
+<h1>Practice shop</h1>
+<p>Local fixture for rehearsing the tb CLI. Contains seeded bugs.</p>
+<form id="login" novalidate>
+  <h2>Sign in</h2>
+  <label for="email">Email</label> <input id="email" name="email" type="email" required>
+  <label for="pw">Password</label> <input id="pw" name="password" type="password" required minlength="8">
+  <button type="submit">Sign in</button>
+  <div id="loginmsg" class="error" role="alert"></div>
+</form>
+<h2>Cart</h2>
+<div class="card" onclick="add('Tea', 12.5)">Tea - RM 12.50 (click to add)</div>
+<div class="card" onclick="add('Cup', 8)">Cup - RM 8.00 (click to add)</div>
+<label for="qty">Quantity</label> <input id="qty" type="number" min="1" max="10" value="1">
+<p>Total: RM <span id="total">0.00</span></p>
+<p class="promo">Free shipping for orders above RM 50.00 this week only</p>
+<div id="catalog"></div>
+<div class="actions"><button id="pay">Place order</button><button id="clear">Delete cart</button></div>
+<p><a href="admin.html" id="adminlink" hidden>Admin panel</a></p>
+<p id="status" role="status"></p>
+<script>
+let items = [];
+// catalog from API; seeded bug: UI shows Teapot at RM 40.00 while the API says 45.00
+fetch('api/products.json').then(r => r.json()).then(d => {
+  const p = d.products.find(x => x.name === 'Teapot');
+  const el = document.createElement('div'); el.className = 'card';
+  el.textContent = 'Teapot - RM 40.00 (click to add)'; el.onclick = () => add('Teapot', p.price);
+  document.getElementById('catalog').appendChild(el);
+});
+if (localStorage.getItem('role') === 'admin') document.getElementById('adminlink').hidden = false;
+function add(n, p) { items.push(p); render(); }
+function render() {
+  const q = Number(document.getElementById('qty').value);
+  // seeded bug: quantity above 9 is ignored
+  const mult = q > 9 ? 1 : q;
+  document.getElementById('total').textContent = (items.reduce((s, x) => s + x, 0) * mult).toFixed(2);
+}
+document.getElementById('qty').addEventListener('input', render);
+document.getElementById('login').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const em = document.getElementById('email').value;
+  // seeded bug: accepts "user@" without domain
+  if (!em.includes('@')) { document.getElementById('loginmsg').textContent = 'Please enter a valid email'; return; }
+  localStorage.setItem('email', em); localStorage.setItem('role', em.startsWith('admin') ? 'admin' : 'customer');
+  document.getElementById('adminlink').hidden = localStorage.getItem('role') !== 'admin';
+  document.getElementById('loginmsg').textContent = 'Signed in as ' + em;
+});
+document.getElementById('clear').addEventListener('click', () => { if (confirm('Delete all items?')) { items = []; render(); document.getElementById('status').textContent = 'Cart deleted'; } else document.getElementById('status').textContent = 'Kept'; });
+document.getElementById('pay').addEventListener('click', () => { console.error('Payment gateway timeout'); document.getElementById('status').textContent = 'Order placed'; });
+</script>
+</body></html>
