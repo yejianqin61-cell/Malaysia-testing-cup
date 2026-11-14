@@ -4,3 +4,4 @@ rec text eol=lf
 *.sh text eol=lf
 # Windows wrappers keep CRLF
 *.cmd text eol=crlf
+board text eol=lf

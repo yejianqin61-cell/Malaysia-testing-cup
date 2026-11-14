@@ -2,9 +2,9 @@
 name: report
 description: Summary test report (12:25) filled strictly from rec data into competition-day/02-summary-report.md structure; GATE 3 human review of every number.
 ---
-Tester A writes the team report; tester B first sends A its numbers (the human pastes B's `./rec stats` output and `./rec copy defects` rows into the shared sheet, or gives them to A).
+Tester A writes the team report from both testers' data: `./board collect` pulls B's records and bug packs into run/B/, then `./rec pack --all` (re)builds every evidence pack. Check that `./rec stats` says "Data from: run/A, run/B"; if B's data is missing, ask the human whether B has synced.
 
-1. Freeze data: `./rec stats` (and B's stats from the human), `./rec list risks`, `./rec list defects --all --full`, `./rec list nfr --full`, `./rec list ailog --full`, `run/recon.md`, `run/$TB_TESTER/sessions.md`.
+1. Freeze data: `./board list --all` (task coverage), `./rec stats`, the evidence packs `run/A/bugs/D-*/evidence-pack.md` and `run/B/bugs/D-*/evidence-pack.md` (the Defects section and the top findings come from these, with their defect_type, location and DevTools lines), `./rec list risks`, `./rec list defects --all --full`, `./rec list nfr --full`, `./rec list ailog --full`, `run/recon.md`, `run/$TB_TESTER/sessions.md`.
 2. Write `run/summary-report.md` following `competition-day/02-summary-report.md` section by section. Every [FILL] comes from the data above; if data is missing, write "not recorded" rather than estimating.
    - Keep Passed / Failed / Blocked / Not Run separate; show denominators.
    - Defect counts by severity count Submitted (and say how many Verified were not submitted in time).

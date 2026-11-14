@@ -11,13 +11,19 @@
 import { chromium } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import fs from 'node:fs';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const T = (process.env.TB_TESTER || 'A').toUpperCase();
+// `--as <name>` anywhere on the command line selects another identity (same as TB_ROLE=<name>):
+//   roles (admin, user2) = a different user;  workers (w1, w2, ...) = parallel browsers of the same user (tb fork)
+const asIdx = process.argv.indexOf('--as');
+let AS = '';
+if (asIdx > 1) { AS = process.argv[asIdx + 1] || ''; process.argv.splice(asIdx, 2); }
 // Optional second identity (e.g. TB_ROLE=admin or TB_ROLE=user2): own browser, port, login, log
-const ROLE = (process.env.TB_ROLE || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const ROLE = (AS || process.env.TB_ROLE || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const ID = ROLE ? `${T}-${ROLE}` : T;
 const roleOffset = ROLE ? 10 + 2 * ([...ROLE].reduce((a, c) => a + c.charCodeAt(0), 0) % 40) : 0;
 const PORT = Number(process.env.TB_PORT || (T === 'B' ? 9223 : 9222) + roleOffset);
@@ -43,7 +49,16 @@ const state = () => readJson(STATE, { active: -1, seq: 0, lastTs: 0, dialog: 'di
 const setState = (patch) => writeJson(STATE, { ...state(), ...patch });
 const cfg = () => readJson(CFG_FILE, null);
 const safeHash = (h) => (h && h.length <= 40 && !h.includes('=') ? h : h ? '#[redacted]' : '');
-const redact = (u) => { try { const x = new URL(u); if (!/^https?:$/.test(x.protocol)) return u; return x.origin + x.pathname + (x.search ? '?[redacted]' : '') + safeHash(x.hash); } catch { return String(u).slice(0, 200); } };
+// Keep query parameters as evidence (?priceMin=abc, ?q=_), but redact secret-looking keys, tokens and emails
+const SECRET_PARAM = /^(sig|signature|key|auth|ticket|nonce|access_token|id_token|refresh_token|client_secret)$/i;
+const redactValue = (k, v) => {
+  if (SECRET_KEYS.test(k) || SECRET_PARAM.test(k)) return '[redacted]';
+  if (/^eyJ[\w-]+\.[\w-]+\./.test(v) || /^[A-Za-z0-9_\-+/=]{32,}$/.test(v)) return '[redacted]';
+  if (/^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(v)) return v.replace(/^[^@]+/, (m) => m[0] + '***');
+  return v.length > 60 ? v.slice(0, 60) + '...' : v;
+};
+const redactQuery = (search, pathname = '') => { if (!search) return ''; if (/callback|oauth|openid|saml|sso/i.test(pathname)) return '?[redacted: auth callback]'; const q = new URLSearchParams(search); const out = []; for (const [k, v] of q) out.push(`${k}=${redactValue(k, v)}`); return out.length ? '?' + out.join('&') : ''; };
+const redact = (u) => { try { const x = new URL(u); if (!/^https?:$/.test(x.protocol)) return u; return x.origin + x.pathname + redactQuery(x.search, x.pathname) + safeHash(x.hash); } catch { return String(u).slice(0, 200); } };
 const rel = (p) => path.relative(ROOT, p).replace(/\\/g, '/');
 const die = (msg, code = 1) => { console.error('ERROR: ' + msg); process.exit(code); };
 const appendJsonl = (f, o) => fs.appendFileSync(f, JSON.stringify(o) + '\n');
@@ -72,6 +87,9 @@ Setup   (second identity for permission tests: TB_ROLE=admin ./tb chrome, then T
   tb init <SUT_URL> [--allow host2,host3]   write run/config.json (allowed hosts, guard words)
   tb chrome [--headless]                   start the browser + event recorder (keep running)
   tb status | tb stop
+  tb fork <n> [--headed]                   start n worker browsers (w1..wn) that inherit this login and page
+  tb workers [stop]                        list (or stop) the worker browsers
+  Any command takes --as <name> to act as a worker (w1) or role (admin):  tb --as w1 snap
 
 Look
   tb snap [--text] [--all]                 page summary + interactive elements with refs (e1, e2, ...)
@@ -94,6 +112,7 @@ Evidence
   tb mark "<label>"         start a section (e.g. "TC-A03" or "D-A02 repro 1")
   tb steps [--mark <label>] [--from <seq>] [--to <seq>]   reproduction steps from the log
   tb errors [--mark <label>] [--last <n>] [--warnings] console / HTTP / dialog / out-of-scope events
+  tb devtools [--mark <label>] [--save <D-id>] [--warnings] [--all] [--body]   F12-style Console + Network evidence block
   tb net [--mark <label>] [--grep <text>] [--last <n>] [--body]   XHR/fetch calls with request/response bodies
   tb perf [<runs>]          reload current page N times (cache off), median timings
   tb a11y                   axe-core WCAG 2.1 AA scan of the current page state
@@ -118,18 +137,32 @@ if (cmd === 'init') {
 if (cmd === 'chrome') {
   const c = cfg(); if (!c) die('run tb init <SUT_URL> first');
   try { await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json(); die(`a browser is already listening on ${PORT} (identity ${ID}). Use tb stop first.`); } catch { /* free */ }
+  // Never resume an old session (it could be another site): mark the last exit as clean, then close restored tabs
+  const prefs = path.join(RT, 'profile', 'Default', 'Preferences');
+  try { const pj = JSON.parse(fs.readFileSync(prefs, 'utf8')); pj.profile = { ...(pj.profile || {}), exit_type: 'Normal', exited_cleanly: true }; pj.session = { ...(pj.session || {}), restore_on_startup: 5 }; fs.writeFileSync(prefs, JSON.stringify(pj)); } catch { /* first run */ }
   const ctx = await chromium.launchPersistentContext(path.join(RT, 'profile'), {
     headless: Boolean(flags.headless), viewport: null,
-    args: [`--remote-debugging-port=${PORT}`, '--window-size=1440,960', '--no-first-run', '--no-default-browser-check'],
+    args: [`--remote-debugging-port=${PORT}`, '--window-size=1440,960', '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--disable-session-crashed-bubble'],
   });
   const ev = (type, page, data) => appendJsonl(EVENTS, { ts: Date.now(), time: myt(), type, page: page ? redact(page.url()) : null, ...data });
   let appliedVp = null;
   const applyVp = async (page) => { const v = state().viewport; if (v) await page.setViewportSize(v).catch(() => {}); };
   const wire = (page) => {
-    page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') ev('console.' + m.type(), page, { text: m.text().slice(0, 400) }); });
-    page.on('pageerror', (e) => ev('uncaught', page, { text: String(e.message || e).slice(0, 400) }));
+    page.on('console', (m) => {
+      if (m.type() !== 'error' && m.type() !== 'warning') return;
+      const loc = m.location(); const where = loc && loc.url ? `${redact(loc.url).split('/').slice(-1)[0]}:${(loc.lineNumber ?? 0) + 1}` : '';
+      ev('console.' + m.type(), page, { text: m.text().slice(0, 400), where });
+    });
+    page.on('pageerror', (e) => {
+      const stack = String(e.stack || '').split(/\r?\n/).slice(1, 4).map((l) => l.trim().replace(/https?:\/\/[^\s)]+\/([^/\s)]+)/g, '$1')).join(' | ');
+      ev('uncaught', page, { text: `${e.name || 'Error'}: ${String(e.message || e).slice(0, 300)}`, stack });
+    });
     page.on('response', (r) => {
-      if (r.status() >= 400) ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}` });
+      if (r.status() >= 400) {
+        const rt = r.request().resourceType();
+        if (rt === 'xhr' || rt === 'fetch') ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}`, rtype: rt });
+        else r.text().then((b) => ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}`, rtype: rt, body: redactBody(b.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300)) })).catch(() => ev('http', page, { status: r.status(), text: `${r.request().method()} ${redact(r.url())}`, rtype: rt }));
+      }
       recordApi(r, page);
     });
     page.on('requestfailed', (r) => { const f = r.failure()?.errorText || ''; if (!/ERR_ABORTED/.test(f)) ev('requestfailed', page, { text: `${r.method()} ${redact(r.url())} ${f}` }); });
@@ -147,8 +180,24 @@ if (cmd === 'chrome') {
   });
   ctx.on('page', (p) => { wire(p); ev('newtab', p, { text: 'new tab opened' }); });
   for (const p of ctx.pages()) wire(p);
-  const first = ctx.pages()[0] || (await ctx.newPage());
-  await first.goto(c.sutUrl).catch((e) => ev('nav-error', first, { text: e.message.split('\n')[0] }));
+  // --auth <file>: inherit a login (cookies + localStorage + sessionStorage) captured by tb save-auth / tb fork
+  if (flags.auth) {
+    const st = readJson(String(flags.auth), null);
+    if (!st) die(`cannot read auth file ${flags.auth}`);
+    if (st.cookies?.length) await ctx.addCookies(st.cookies).catch((e) => ev('tb-internal', null, { text: 'addCookies: ' + e.message.slice(0, 120) }));
+    await ctx.addInitScript((seed) => {
+      try {
+        const o = (seed.origins || []).find((x) => x.origin === location.origin);
+        if (o && !localStorage.getItem('__tb_seeded')) { for (const kv of o.localStorage || []) localStorage.setItem(kv.name, kv.value); localStorage.setItem('__tb_seeded', '1'); }
+        const ss = (seed.sessionStorage || {})[location.origin];
+        if (ss && !sessionStorage.getItem('__tb_seeded')) { for (const [k, v] of Object.entries(ss)) sessionStorage.setItem(k, v); sessionStorage.setItem('__tb_seeded', '1'); }
+      } catch {}
+    }, st);
+  }
+  const first = await ctx.newPage();
+  for (const p of ctx.pages()) if (p !== first) await p.close().catch(() => {});
+  const startUrl = typeof flags.start === 'string' && hostAllowed(flags.start) ? flags.start : c.sutUrl;
+  await first.goto(startUrl).catch((e) => ev('nav-error', first, { text: e.message.split('\n')[0] }));
   setState({ active: 0, viewport: null });
   // apply viewport changes requested by `tb viewport` (emulation must live in this long-running session)
   const timer = setInterval(async () => {
@@ -178,12 +227,15 @@ async function recordApi(r, page) {
     const req = r.request();
     const type = req.resourceType();
     if (type !== 'xhr' && type !== 'fetch') return;
-    if (!hostAllowed(r.url())) return; // third-party analytics etc.
+    // The SUT's API often lives on another host (e.g. api.example.com, *.railway.app): record it, labelled with its host.
+    const host = (() => { try { return new URL(r.url()).host; } catch { return ''; } })();
+    if (/google-analytics|googletagmanager|doubleclick|facebook\.net|hotjar|sentry\.io|clarity\.ms/.test(host)) return;
     const ct = (r.headers()['content-type'] || '').split(';')[0];
     let body = '';
     if (/json|text|xml|form/.test(ct)) body = redactBody((await r.text().catch(() => '')).slice(0, 4000));
     const post = redactBody((req.postData() || '').slice(0, 1500));
-    appendJsonl(NET, { ts: Date.now(), time: myt(), method: req.method(), url: redact(r.url()), path: (() => { try { return new URL(r.url()).pathname; } catch { return r.url(); } })(), status: r.status(), ct, size: Number(r.headers()['content-length'] || body.length || 0), req: post, body, page: redact(page.url()) });
+    let dur = null; try { const t = req.timing(); if (t && t.responseEnd > 0) dur = Math.round(t.responseEnd); } catch {}
+    appendJsonl(NET, { ts: Date.now(), time: myt(), method: req.method(), url: redact(r.url()), host, ext: !hostAllowed(r.url()), path: (() => { try { return new URL(r.url()).pathname; } catch { return r.url(); } })(), status: r.status(), dur, ct, size: Number(r.headers()['content-length'] || body.length || 0), req: post, body, page: redact(page.url()) });
   } catch (e) { try { appendJsonl(EVENTS, { ts: Date.now(), time: myt(), type: 'tb-internal', text: 'api capture: ' + String(e.message).slice(0, 200) }); } catch {} }
 }
 
@@ -215,6 +267,20 @@ if (cmd === 'stop') {
   catch { console.log(`nothing running on ${PORT}`); }
   process.exit(0);
 }
+
+async function saveAuth(ctx, page, f) {
+  const st = await ctx.storageState();
+  const ss = await page.evaluate(() => { const o = {}; for (let i = 0; i < sessionStorage.length; i++) { const k = sessionStorage.key(i); if (k !== '__tb_seeded') o[k] = sessionStorage.getItem(k); } return o; }).catch(() => ({}));
+  st.sessionStorage = { [new URL(page.url()).origin]: ss };
+  // storageState() misses localStorage on CDP-connected contexts: read it from the page itself
+  const ls = await page.evaluate(() => { const o = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k !== '__tb_seeded') o.push({ name: k, value: localStorage.getItem(k) }); } return o; }).catch(() => []);
+  const origin = new URL(page.url()).origin;
+  st.origins = (st.origins || []).filter((o) => o.origin !== origin).concat(ls.length ? [{ origin, localStorage: ls }] : []);
+  writeJson(f, st);
+}
+const workerIds = () => (fs.existsSync(path.join(ROOT, '.tb')) ? fs.readdirSync(path.join(ROOT, '.tb')).filter((d) => d.startsWith(T + '-w')).map((d) => d.slice(T.length + 1)) : []);
+const portOf = (role) => (T === 'B' ? 9223 : 9222) + 10 + 2 * ([...role].reduce((a, c) => a + c.charCodeAt(0), 0) % 40);
+const alive = async (port) => { try { await (await fetch(`http://127.0.0.1:${port}/json/version`)).json(); return true; } catch { return false; } };
 
 // ---------------- snapshot ----------------
 async function snapshot(page, { text = false, all = false } = {}) {
@@ -269,7 +335,9 @@ async function snapshot(page, { text = false, all = false } = {}) {
     const warn = [];
     const vw = document.documentElement.clientWidth;
     if (document.documentElement.scrollWidth > vw + 1) warn.push(`horizontal overflow: page is ${document.documentElement.scrollWidth}px wide in a ${vw}px viewport`);
-    const tagged = [...document.querySelectorAll('[data-tb-ref]')].map((el) => ({ el, r: el.getBoundingClientRect(), ref: el.dataset.tbRef })).filter((x) => x.r.width > 2 && x.r.height > 2);
+    // An element scrolled out of an overflow container (tab strip, carousel) is hidden on purpose, not broken
+    const clipped = (el, r) => { for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) { const cs = getComputedStyle(p); if (cs.overflowX !== 'visible' || cs.overflowY !== 'visible') { const pr = p.getBoundingClientRect(); if (r.left < pr.left - 1 || r.right > pr.right + 1 || r.top < pr.top - 1 || r.bottom > pr.bottom + 1) return true; } } return false; };
+    const tagged = [...document.querySelectorAll('[data-tb-ref]')].map((el) => ({ el, r: el.getBoundingClientRect(), ref: el.dataset.tbRef })).filter((x) => x.r.width > 2 && x.r.height > 2 && !clipped(x.el, x.r));
     for (let i = 0; i < tagged.length && warn.length < 10; i++) {
       const a = tagged[i];
       if (a.r.right > vw + 2 && getComputedStyle(a.el).position !== 'fixed') warn.push(`${a.ref} extends past the right edge (${Math.round(a.r.right - vw)}px)`);
@@ -347,7 +415,7 @@ async function act(name, fn, { target = null, value: value0 = null, why = null }
   let info = { title: '', msgs: [] };
   try { const sn = await snapshot(cur); info = { title: sn.title, msgs: sn.msgs }; } catch {}
   await sleep(150);
-  const apis = readEventsFrom(netOffset, NET).map((a) => `${a.method} ${a.path} ${a.status}${a.ct ? ' ' + a.ct.split('/')[1] : ''}`);
+  const apis = readEventsFrom(netOffset, NET).map((a) => `${a.method} ${a.ext ? a.host : ''}${a.path} ${a.status}${a.ct ? ' ' + a.ct.split('/')[1] : ''}`);
   const newEv = readEventsFrom(evOffset).filter((e) => !['nav', 'console.warning'].includes(e.type));
   const tgt = t || target;
   if (tgt?.password) value = '[password]';
@@ -384,7 +452,11 @@ switch (cmd) {
   }
   case 'snap': {
     const { page, index } = await connect();
-    printSnap(await snapshot(page, { text: Boolean(flags.text), all: Boolean(flags.all) }), index);
+    let sn = await snapshot(page, { text: Boolean(flags.text), all: Boolean(flags.all) });
+    // single-page apps may still be rendering: retry up to ~4 s while the page looks empty
+    for (let i = 0; i < 8 && !sn.out.length && sn.text.length < 20; i++) { await sleep(500); sn = await snapshot(page, { text: Boolean(flags.text), all: Boolean(flags.all) }); }
+    if (!sn.out.length && sn.text.length < 20) console.log('NOTE: page still looks empty after 4 s (slow load, canvas UI or iframe). Try tb shot and read it.');
+    printSnap(sn, index);
     await done();
   }
   case 'text': {
@@ -392,6 +464,42 @@ switch (cmd) {
     const t = pos[0] ? await page.locator(`[data-tb-ref="${pos[0]}"]`).innerText().catch(() => die('ref not found, run tb snap')) : await page.locator('body').innerText();
     console.log(t.replace(/\n{3,}/g, '\n\n').slice(0, 12000));
     await done();
+  }
+  case 'fork': {
+    if (ROLE) die('run tb fork from your main identity (without --as)');
+    const n = Math.min(Number(pos[0]) || 2, 4);
+    const { ctx, page } = await connect();
+    const authFile = path.join(RT, 'fork-auth.json');
+    await saveAuth(ctx, page, authFile);
+    const start = page.url();
+    await browser.close().catch(() => {});
+    const started = [];
+    for (let i = 1; i <= n; i++) {
+      const w = `w${i}`; const port = portOf(w);
+      if (await alive(port)) { started.push(`${w}: already running on ${port}`); continue; }
+      const logDir = path.join(ROOT, '.tb', `${T}-${w}`); fs.mkdirSync(logDir, { recursive: true });
+      const out = fs.openSync(path.join(logDir, 'daemon.log'), 'a');
+      const args = [fileURLToPath(import.meta.url), 'chrome', '--as', w, '--auth', authFile, '--start', start, ...(flags.headed ? [] : ['--headless'])];
+      spawn(process.execPath, args, { detached: true, stdio: ['ignore', out, out], env: { ...process.env, TB_TESTER: T, TB_ROLE: '', MSYS_NO_PATHCONV: '1' }, windowsHide: true }).unref();
+      started.push(w);
+    }
+    for (let k = 0; k < 40; k++) { const ok = await Promise.all(started.filter((s) => !s.includes(':')).map((w) => alive(portOf(w)))); if (ok.every(Boolean)) break; await sleep(500); }
+    for (const w of started) { const id = w.split(':')[0]; console.log(`${id}: ${(await alive(portOf(id))) ? 'running' : 'NOT running (see .tb/' + T + '-' + id + '/daemon.log)'} on port ${portOf(id)}, same login, start page ${redact(start)}`); }
+    console.log(`Use:  ./tb --as w1 snap   (each worker has its own browser, refs, log and evidence files ${T}-w1-*.png)`);
+    console.log('Workers share the SAME account: never let two workers change the same cart/order/profile at once.');
+    setTimeout(() => process.exit(0), 300);
+    break;
+  }
+  case 'workers': {
+    const ids = workerIds();
+    if (!ids.length) { console.log('no workers (start with: tb fork <n>)'); process.exit(0); }
+    for (const w of ids) {
+      const port = portOf(w); const up = await alive(port);
+      if (pos[0] === 'stop' && up) { try { const b = await chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: 3000 }); const s = await b.newBrowserCDPSession(); await s.send('Browser.close'); } catch {} }
+      const acts = readJsonl(path.join(RUN, T, `actions-${w}.jsonl`)); const last = acts[acts.length - 1];
+      console.log(`${w}: ${pos[0] === 'stop' ? (up ? 'stopped' : 'not running') : up ? 'running' : 'stopped'} port ${port}; ${acts.filter((a) => a.cmd !== 'mark').length} actions${last ? `; last ${last.time} ${last.cmd} ${last.urlAfter || last.value || ''}` : ''}`);
+    }
+    process.exit(0);
   }
   case 'find': {
     if (!pos[0]) die('usage: tb find "<visible text>"');
@@ -425,7 +533,7 @@ switch (cmd) {
   }
   case 'js': {
     if (!pos[0]) die('usage: tb js "<expression>"');
-    if (/\b(fetch|XMLHttpRequest|sendBeacon|\.submit\(|\.click\(|localStorage\.(set|remove|clear)|sessionStorage\.(set|remove|clear)|document\.cookie\s*=|location\s*=|location\.(assign|replace|href\s*=))/.test(pos[0])) die('tb js is for read-only inspection. Use tb actions to change state.');
+    if (/(\bfetch\s*\(|new\s+XMLHttpRequest|sendBeacon|\.submit\(|\.click\(|localStorage\.(set|remove|clear)|sessionStorage\.(set|remove|clear)|document\.cookie\s*=|location\s*=|location\.(assign|replace|href\s*=))/.test(pos[0])) die('tb js is for read-only inspection. Use tb actions to change state.');
     const { page } = await connect();
     const r = await page.evaluate((e) => { try { const v = (0, eval)(e); return JSON.stringify(v, null, 1)?.slice(0, 4000); } catch (x) { return 'error: ' + x.message; } }, pos[0]);
     appendJsonl(ACTIONS, { seq: state().seq, ts: Date.now(), time: myt(), tester: T, cmd: 'js', value: pos[0].slice(0, 200), inspectOnly: true });
@@ -455,13 +563,14 @@ switch (cmd) {
     console.log(`viewport: ${vp ? vp.width + 'x' + vp.height + ' (size only; no touch/UA emulation - use run-checks.mjs for that)' : 'window size'}`); process.exit(0);
   }
   case 'save-auth': {
-    const { ctx } = await connect(); const f = path.join(RT, 'auth.json'); await ctx.storageState({ path: f });
+    const { ctx, page } = await connect(); const f = path.join(RT, 'auth.json'); await saveAuth(ctx, page, f);
     console.log(`saved ${rel(f)} (contains session tokens: never paste or share)`); await done();
   }
 
   // ----- actions -----
   case 'open': {
     if (!pos[0]) die('usage: tb open <url|path>');
+    if (/^[A-Za-z]:[\/]/.test(pos[0])) die(`"${pos[0]}" looks like a Windows path (Git Bash rewrote a /path argument). Use the ./tb wrapper, or write the path without the leading slash.`);
     const u = new URL(pos[0], cfg()?.sutUrl || undefined);
     if (!hostAllowed(u.href)) die(`${u.host} is not in allowed hosts (${cfg().allowHosts.join(', ')}). Edit run/config.json only if the briefing allows it.`);
     await act('open', (p) => p.goto(u.href, { timeout: 30000 }).then(() => null), { value: redact(u.href) });
@@ -563,6 +672,64 @@ switch (cmd) {
     const out = [...grouped.values()].slice(-(Number(flags.last) || 40));
     if (!out.length) console.log('no console errors / HTTP errors / dialogs recorded in range' + (flags.warnings ? '' : ' (add --warnings to include console warnings)'));
     for (const e of out) console.log(`${e.time} ${e.type}${e.status ? ' ' + e.status : ''}${e.n > 1 ? ' (x' + e.n + ')' : ''}: ${e.text.slice(0, 300)}  @ ${e.page}`);
+    process.exit(0);
+  }
+  case 'devtools': {
+    // F12-style evidence (Console + Network) for one marked section, as paste-ready English text
+    const all = readJsonl(ACTIONS);
+    let from = Date.now() - 2 * 60 * 1000; let to = Infinity; let label = 'last 2 minutes';
+    if (flags.mark) {
+      const mi = all.findIndex((r) => r.cmd === 'mark' && r.value === flags.mark);
+      if (mi < 0) die(`mark "${flags.mark}" not found`);
+      from = all[mi].ts; const next = all.slice(mi + 1).find((r) => r.cmd === 'mark'); if (next) to = next.ts; label = flags.mark;
+    }
+    const inRange = (x) => x.ts >= from && x.ts < to + 3000; // late responses of the last step
+    const evs = readJsonl(EVENTS).filter(inRange);
+    const calls = readJsonl(NET).filter(inRange);
+    let ver = 'unknown'; try { ver = (await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json()).Browser; } catch {}
+    const page = (p) => { try { return new URL(p).pathname; } catch { return p || ''; } };
+    const L = [];
+    const t0 = myt(new Date(from)); const t1 = myt(new Date(Math.min(to, Date.now())));
+    L.push(`DevTools evidence - ${label} (${t0} to ${t1.slice(11)} MYT, ${ver}, identity ${ID})`);
+    L.push('Captured automatically through the Chrome DevTools Protocol (same data as the F12 Console and Network tabs). Secret-looking values are redacted.');
+    L.push('', 'Console:');
+    const con = new Map();
+    for (const e of evs.filter((e) => e.type === 'uncaught' || e.type === 'console.error' || (flags.warnings && e.type === 'console.warning'))) {
+      const k = e.type + e.text; const g = con.get(k) || { ...e, n: 0 }; g.n++; con.set(k, g);
+    }
+    if (!con.size) L.push('  (no errors' + (flags.warnings ? ' or warnings' : '') + ')');
+    for (const e of con.values()) {
+      const kind = e.type === 'uncaught' ? 'Uncaught' : e.type.replace('console.', '');
+      L.push(`  [${kind}] ${e.text}${e.where ? '  (' + e.where + ')' : ''}${e.n > 1 ? '  x' + e.n : ''}  - page ${page(e.page)}`);
+      if (e.stack) L.push(`      ${e.stack}`);
+    }
+    L.push('', 'Network (Fetch/XHR, failed requests):');
+    const oneLine = (b, ct) => (/html/.test(ct || '') ? b.replace(/<(script|style)[\s\S]*?<\/>/gi, ' ').replace(/<[^>]+>/g, ' ') : b).replace(/\s+/g, ' ').trim();
+    const lines = [];
+    for (const c of calls) {
+      const bad = c.status >= 400;
+      lines.push({ ts: c.ts, bad, text: [`  ${bad ? '!! ' : ''}${c.method} ${c.url} -> ${c.status} ${c.ct || ''}${c.dur ? ' (' + c.dur + ' ms)' : ''}`,
+        ...(c.req ? [`      Request payload: ${c.req.slice(0, flags.body ? 1500 : 300)}`] : []),
+        ...(c.body && (bad || flags.body || calls.length <= 6) ? [`      Response: ${oneLine(c.body, c.ct).slice(0, flags.body ? 4000 : 400)}`] : [])] });
+    }
+    for (const e of evs.filter((e) => (e.type === 'http' && e.rtype && e.rtype !== 'xhr' && e.rtype !== 'fetch') || e.type === 'requestfailed')) {
+      lines.push({ ts: e.ts, bad: true, text: e.type === 'requestfailed' ? [`  !! FAILED ${e.text}`] : [`  !! ${e.text} -> ${e.status} (${e.rtype})`, ...(e.body ? [`      Response: ${e.body}`] : [])] });
+    }
+    lines.sort((a, b) => a.ts - b.ts);
+    const shown = flags.all ? lines : lines.filter((l) => l.bad).concat(lines.filter((l) => !l.bad).slice(-8)).sort((a, b) => a.ts - b.ts);
+    if (!shown.length) L.push('  (no Fetch/XHR calls; the page may be server-rendered)');
+    for (const l of shown) L.push(...l.text);
+    if (!flags.all && shown.length < lines.length) L.push(`  (${lines.length - shown.length} more successful calls hidden; --all shows them)`);
+    const dlg = evs.filter((e) => e.type === 'dialog' || e.type === 'OUT-OF-SCOPE');
+    if (dlg.length) { L.push('', 'Dialogs / scope:'); for (const e of dlg) L.push(`  ${e.type}: ${e.text}`); }
+    const out = L.join('\n');
+    console.log(out);
+    if (flags.save) {
+      const dir = path.join(RUN, T, 'bugs', 'evidence'); fs.mkdirSync(dir, { recursive: true });
+      const f = path.join(dir, `${String(flags.save).replace(/[^A-Za-z0-9_-]/g, '')}-devtools-${ID}.md`);
+      fs.writeFileSync(f, '```\n' + out + '\n```\n');
+      console.log(`\nsaved ${rel(f)}`);
+    }
     process.exit(0);
   }
   case 'net': {

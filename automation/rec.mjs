@@ -9,6 +9,9 @@
 //   rec copy <sheet>                                   TSV to clipboard -> Ctrl+V into Google Sheets
 //   rec import <sheet> <file.tsv|csv|->                rows copied from Google Sheets (e.g. shared risks)
 //   rec import-nfr automation/out/<run>/nonfunctional.csv   add run-checks.mjs rows with new ids
+//   rec note <topic> "<finding>" [--by w1]            live note from a sub-agent (run/notes/<topic>.md)
+//   rec board                                          rewrite run/LIVE.md (also done after every write)
+//   rec pack <D-id> | --all                            build run/<T>/bugs/<D-id>/evidence-pack.md (auto on Verified)
 //
 // Tester: env TB_TESTER=A|B. Files: run/<T>/<sheet>.csv ; risks are shared in run/risks.csv.
 
@@ -37,9 +40,10 @@ const SHEETS = {
   },
   defects: {
     title: 'Defects', prefix: 'D-',
-    cols: ['defect_id', 'title', 'feature', 'severity', 'priority', 'repro', 'steps', 'expected', 'actual', 'impact', 'evidence', 'case_id', 'risk_id', 'owner', 'reviewed_by', 'status', 'platform_id'],
+    // defect_type and location are appended after the workbook's 17 columns (add the two headers in the sheet)
+    cols: ['defect_id', 'title', 'feature', 'severity', 'priority', 'repro', 'steps', 'expected', 'actual', 'impact', 'evidence', 'case_id', 'risk_id', 'owner', 'reviewed_by', 'status', 'platform_id', 'defect_type', 'location'],
     required: ['title', 'feature', 'severity', 'steps', 'expected', 'actual', 'evidence'],
-    enums: { severity: ['Critical', 'High', 'Medium', 'Low'], priority: ['P1', 'P2', 'P3', ''], owner: ['A', 'B'], reviewed_by: ['A', 'B', 'AI+A', 'AI+B', ''], status: ['Suspected', 'Verified', 'Submitted', 'Dropped-not a bug', 'Duplicate'] },
+    enums: { defect_type: ['Functional', 'Calculation', 'Validation', 'Data consistency', 'Error handling', 'Access control', 'Visual/Layout', 'Usability', 'Performance', 'Accessibility', 'Compatibility', 'Security (passive)', ''], severity: ['Critical', 'High', 'Medium', 'Low'], priority: ['P1', 'P2', 'P3', ''], owner: ['A', 'B'], reviewed_by: ['A', 'B', 'AI+A', 'AI+B', ''], status: ['Suspected', 'Verified', 'Submitted', 'Dropped-not a bug', 'Duplicate'] },
     defaults: { status: 'Suspected' },
   },
   nfr: {
@@ -108,6 +112,8 @@ function validate(key, r, isNew) {
       const m = /^(\d+)\s*\/\s*(\d+)/.exec(r.repro || '');
       if (!m || Number(m[1]) < 2) errs.push('status Verified needs repro like "2/2" or "3/3" (reproduced at least twice)');
       if (!String(r.evidence || '').trim()) errs.push('status Verified needs evidence');
+      if (!String(r.defect_type || '').trim()) errs.push('status Verified needs defect_type (Functional, Calculation, Validation, Data consistency, Error handling, Access control, Visual/Layout, Usability, Performance, Accessibility, Compatibility, Security (passive))');
+      if (!String(r.location || '').trim()) errs.push('status Verified needs location (page path + area, e.g. "/cart - quantity field")');
     }
     if (r.status === 'Submitted') {
       if (!String(r.platform_id || '').trim()) errs.push('status Submitted needs platform_id (the ID shown by the official platform after a HUMAN submits it)');
@@ -127,13 +133,152 @@ function nextId(key, rows) {
 }
 function parseJson(s) { try { const o = JSON.parse(s); for (const k of Object.keys(o)) o[k] = o[k] === null ? '' : String(o[k]); return o; } catch (e) { die(`invalid JSON: ${e.message}`); } }
 
+function statsLines() {
+  const testers = ['A', 'B'].filter((t) => fs.existsSync(path.join(RUN, t)));
+  const all = (k) => testers.flatMap((t) => load(k, t));
+  const risks = load('risks'); const cases = all('cases'); const defects = all('defects'); const nfr = all('nfr'); const ai = all('ailog');
+  const c = (arr, f) => arr.filter(f).length;
+  const passed = c(cases, (r) => r.status === 'Passed'); const failed = c(cases, (r) => r.status === 'Failed');
+  const sub = defects.filter((d) => d.status === 'Submitted');
+  const ver = defects.filter((d) => d.status === 'Verified');
+  const lines = [
+    `Data from: ${testers.map((t) => `run/${t}`).join(', ') || '(none)'} + run/risks.csv  (${myt()} MYT)`,
+    `Risks identified: ${risks.length} (High ${c(risks, (r) => r.priority === 'High')}, Medium ${c(risks, (r) => r.priority === 'Medium')}, Low ${c(risks, (r) => r.priority === 'Low')})`,
+    `  Tested in depth ${c(risks, (r) => r.coverage === 'Tested in depth')}, Smoke only ${c(risks, (r) => r.coverage === 'Smoke only')}, Not tested ${c(risks, (r) => r.coverage === 'Not tested')}, coverage not set ${c(risks, (r) => !r.coverage)}`,
+    `Test cases designed: ${cases.length}`,
+    `  Passed ${passed}, Failed ${failed}, Blocked ${c(cases, (r) => r.status === 'Blocked')}, Not run ${c(cases, (r) => r.status === 'Not Run' || !r.status)}`,
+    `  Pass rate (Passed/(Passed+Failed)): ${passed + failed ? ((passed / (passed + failed)) * 100).toFixed(1) + '%' : 'N/A'}`,
+    `Defects submitted: ${sub.length} (Critical ${c(sub, (d) => d.severity === 'Critical')}, High ${c(sub, (d) => d.severity === 'High')}, Medium ${c(sub, (d) => d.severity === 'Medium')}, Low ${c(sub, (d) => d.severity === 'Low')})`,
+    `  Verified but NOT yet submitted: ${ver.length}${ver.length ? ' -> ' + ver.map((d) => d.defect_id).join(', ') : ''}`,
+    `  Still Suspected: ${c(defects, (d) => d.status === 'Suspected')}; Dropped after review: ${c(defects, (d) => /Dropped|Duplicate/.test(d.status))}`,
+    `Non-functional findings: ${c(nfr, (r) => r.verdict === 'Finding')} (rows ${nfr.length}, unreviewed ${c(nfr, (r) => !r.verdict)})`,
+    `AI interactions logged: ${ai.length}`,
+  ];
+  return lines;
+}
+
 // ---------- commands ----------
 const [cmd, rawSheet, a3, a4] = process.argv.slice(2);
 const flags = Object.fromEntries(process.argv.slice(2).filter((x) => x.startsWith('--')).map((x, i, arr) => [x.slice(2), true]));
 const argAfter = (name) => { const i = process.argv.indexOf('--' + name); return i > 0 ? process.argv[i + 1] : undefined; };
 const sheet = (s) => { const k = ALIAS[String(s || '').toLowerCase()] || String(s || '').toLowerCase(); if (!SHEETS[k]) die(`unknown sheet "${s}". Use: ${Object.keys(SHEETS).join(', ')}`); return k; };
 
+// ---------- evidence pack: run/<T>/bugs/<D-id>/ with evidence-pack.md + copied files ----------
+function buildPack(d, tester) {
+  const id = d.defect_id;
+  const bugs = path.join(RUN, tester, 'bugs');
+  const dir = path.join(bugs, id); const shotsDir = path.join(dir, 'shots');
+  fs.mkdirSync(shotsDir, { recursive: true });
+  const copied = [];
+  const copy = (src, name) => { try { if (src && fs.existsSync(src)) { fs.copyFileSync(src, path.join(dir, name)); copied.push(name); return true; } } catch {} return false; };
+  const report = path.join(bugs, `${id}.md`);
+  const hasReport = copy(report, 'report.md');
+  const evDir = path.join(bugs, 'evidence');
+  const devtools = fs.existsSync(evDir) ? fs.readdirSync(evDir).filter((f) => f.startsWith(`${id}-devtools`)) : [];
+  for (const f of devtools) copy(path.join(evDir, f), f);
+  const notesFile = path.join(RUN, 'notes', `${id}.md`);
+  const notes = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8').trim().split('\n') : [];
+  copy(notesFile, 'repro-notes.md');
+  // screenshots: from the evidence field and from worker notes
+  const shotPaths = new Set();
+  for (const m of `${d.evidence} ${notes.join(' ')}`.matchAll(/run\/[A-Za-z0-9_\-/.]+?\.png/g)) shotPaths.add(m[0]);
+  const shots = [];
+  for (const sp of shotPaths) { const src = path.join(ROOT, sp); if (fs.existsSync(src)) { const n = path.basename(sp); fs.copyFileSync(src, path.join(shotsDir, n)); shots.push(n); } }
+  const md = [];
+  md.push(`# ${id} - ${d.title}`, '');
+  md.push('| Field | Value |', '|---|---|');
+  const row = (k, v) => md.push(`| ${k} | ${String(v || '-').replace(/\|/g, '/').replace(/\r?\n/g, ' ')} |`);
+  row('Location', d.location); row('Feature', d.feature); row('Defect type', d.defect_type);
+  row('Severity / priority', `${d.severity}${d.priority ? ' / ' + d.priority : ''}`); row('Status', d.status + (d.platform_id ? ` (platform ${d.platform_id})` : ''));
+  row('Reproducibility', d.repro); row('Risk / test case', `${d.risk_id || '-'} / ${d.case_id || '-'}`); row('Found by / reviewed by', `${d.owner || tester} / ${d.reviewed_by || '-'}`);
+  md.push('', '## Expected', d.expected || '-', '', '## Actual', d.actual || '-', '', '## Impact', d.impact || '-');
+  md.push('', '## Steps to reproduce', String(d.steps || '-').replace(/\s*(\d+)\.\s/g, '\n$1. ').trim());
+  md.push('', '## Independent reproductions');
+  if (notes.length) md.push(...notes); else md.push('- (no worker notes recorded)');
+  md.push('', '## DevTools evidence (F12 Console / Network)');
+  if (devtools.length) for (const f of devtools) md.push('', `From \`${f}\`:`, '', fs.readFileSync(path.join(evDir, f), 'utf8').trim());
+  else md.push('- (no devtools capture yet: run `./tb devtools --mark "<mark>" --save ' + id + '`)');
+  md.push('', '## Screenshots');
+  if (shots.length) for (const n of shots) md.push(`- ![${n}](shots/${n})`); else md.push('- (none found)');
+  md.push('', '## Paste-ready report', hasReport ? 'See `report.md` in this folder (format of competition-day/05-bug-writing-guide.md).' : '- (report.md not written yet)');
+  md.push('', `_Pack built ${myt()} MYT by rec from run/${tester}/defects.csv, run/notes/${id}.md and run/${tester}/bugs/evidence/._`);
+  fs.writeFileSync(path.join(dir, 'evidence-pack.md'), md.join('\n') + '\n');
+  return path.join(dir, 'evidence-pack.md');
+}
+
+// ---------- concurrency: one writer at a time (parallel sub-agents share these files) ----------
+const WRITES = new Set(['add', 'update', 'import', 'import-nfr', 'note', 'pack']);
+const LOCK = path.join(RUN, '.lock');
+let locked = false;
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+if (WRITES.has(cmd)) {
+  fs.mkdirSync(RUN, { recursive: true });
+  for (let i = 0; i < 200 && !locked; i++) {
+    try { fs.writeFileSync(LOCK, String(process.pid), { flag: 'wx' }); locked = true; }
+    catch { try { if (Date.now() - fs.statSync(LOCK).mtimeMs > 15000) fs.rmSync(LOCK, { force: true }); } catch {} sleepSync(50 + Math.random() * 50); }
+  }
+  if (!locked) die('records are busy (run/.lock held > 10 s). Retry the command.');
+  process.on('exit', (code) => {
+    try { if (code === 0) writeBoard(); } catch (e) { console.error('board not updated: ' + e.message); }
+    try { fs.rmSync(LOCK, { force: true }); } catch {}
+  });
+}
+
+// ---------- live board: run/LIVE.md, rewritten after every successful write ----------
+const NOTES = path.join(RUN, 'notes');
+function readJsonlSafe(f) { try { return fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } }
+function writeBoard() {
+  const testers = ['A', 'B'].filter((t) => fs.existsSync(path.join(RUN, t)));
+  const defects = testers.flatMap((t) => load('defects', t));
+  const cases = testers.flatMap((t) => load('cases', t));
+  const risks = load('risks');
+  const md = [];
+  md.push('# TeaYeah LIVE board', '', `Updated ${myt()} MYT (written by rec after every change; do not edit)`, '');
+  const queue = defects.filter((d) => d.status === 'Verified');
+  md.push(`## Waiting for a human to submit (GATE 2): ${queue.length}`);
+  for (const d of queue) md.push(`- **${d.defect_id}** [${d.severity}] ${d.defect_type || ''} - ${d.title} - repro ${d.repro} - pack run/${d.owner || T}/bugs/${d.defect_id}/evidence-pack.md`);
+  const inRepro = defects.filter((d) => d.status === 'Suspected');
+  md.push('', `## Being reproduced / triaged: ${inRepro.length}`);
+  for (const d of inRepro) md.push(`- ${d.defect_id} [${d.severity}] ${d.title} - repro so far ${d.repro || '0'}`);
+  md.push('', '## All defects', '', '| ID | Sev | Status | Repro | Title | Evidence | Platform |', '|---|---|---|---|---|---|---|');
+  for (const d of defects) md.push(`| ${d.defect_id} | ${d.severity} | ${d.status} | ${d.repro || '-'} | ${String(d.title).replace(/\|/g, '/')} | ${(d.evidence || '').split(/[;,\s]+/).filter(Boolean).slice(-1)[0] || '-'} | ${d.platform_id || '-'} |`);
+  md.push('', '## Risk coverage', '', '| Risk | Feature | Prio | Cases run / designed | Coverage |', '|---|---|---|---|---|');
+  for (const r of risks) { const cs = cases.filter((c) => c.risk_id === r.risk_id); md.push(`| ${r.risk_id} | ${r.feature} | ${r.priority} | ${cs.filter((c) => c.status && c.status !== 'Not Run').length} / ${cs.length} | ${r.coverage || '-'} |`); }
+  md.push('', '## Notes from agents (latest first)');
+  if (fs.existsSync(NOTES)) {
+    const files = fs.readdirSync(NOTES).filter((f) => f.endsWith('.md')).map((f) => ({ f, t: fs.statSync(path.join(NOTES, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+    for (const { f } of files.slice(0, 15)) { const lines = fs.readFileSync(path.join(NOTES, f), 'utf8').trim().split('\n'); md.push(`- **${f.replace(/\.md$/, '')}** (${lines.length}): ${lines.slice(-2).map((l) => l.replace(/^- /, '')).join(' / ')}`); }
+  }
+  md.push('', '## Recent browser actions (all identities)');
+  const acts = testers
+    .flatMap((t) => fs.readdirSync(path.join(RUN, t)).filter((f) => /^actions.*\.jsonl$/.test(f)).flatMap((f) => readJsonlSafe(path.join(RUN, t, f))))
+    .filter((a) => a.cmd !== 'mark' && !a.inspectOnly).sort((a, b) => a.ts - b.ts).slice(-12);
+  for (const a of acts) md.push(`- ${a.time} ${a.identity || a.tester} ${a.cmd} ${a.target ? a.target.role + ' "' + a.target.name + '"' : a.value ?? ''}${a.error ? ' (FAILED)' : ''}`);
+  md.push('', '## Numbers', '', '```', ...statsLines(), '```');
+  fs.writeFileSync(path.join(RUN, 'LIVE.md'), md.join('\n') + '\n');
+}
+
 switch (cmd) {
+  case 'note': {
+    // rec note <topic> "<one-line finding>" [--by w1]   topics like "recon-cart" or "D-A03"
+    const topic = String(rawSheet || '').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 40); const text = a3;
+    if (!topic || !text) die('usage: rec note <topic> "<one-line finding>" [--by <worker>]');
+    fs.mkdirSync(NOTES, { recursive: true });
+    const by = argAfter('by') || T;
+    fs.appendFileSync(path.join(NOTES, topic + '.md'), `- ${myt().slice(11)} [${by}] ${String(text).replace(/\s*\n\s*/g, ' ')}\n`);
+    console.log(`noted in run/notes/${topic}.md`);
+    break;
+  }
+  case 'board': { writeBoard(); console.log('wrote run/LIVE.md'); break; }
+  case 'pack': {
+    // rec pack <D-id> | rec pack --all     (re)build evidence packs; also built automatically when a defect becomes Verified
+    const testers = ['A', 'B'].filter((t) => fs.existsSync(path.join(RUN, t)));
+    const all = testers.flatMap((t) => load('defects', t).map((d) => ({ d, t })));
+    const pick = flags.all ? all.filter((x) => ['Verified', 'Submitted'].includes(x.d.status)) : all.filter((x) => x.d.defect_id === rawSheet);
+    if (!pick.length) die(flags.all ? 'no Verified/Submitted defects' : `usage: rec pack <D-id> | rec pack --all  (${rawSheet || 'no id'} not found)`);
+    for (const { d, t } of pick) console.log(`${d.defect_id}: ${path.relative(ROOT, buildPack(d, t))}`);
+    break;
+  }
   case 'add': {
     const key = sheet(rawSheet); if (!a3) die(`usage: rec add ${key} '<json>'`);
     const sh = SHEETS[key]; const rows = load(key);
@@ -155,6 +300,7 @@ switch (cmd) {
     if (key === 'cases' && patch.status && patch.status !== 'Not Run' && !patch.executed_at_myt) patch.executed_at_myt = myt();
     Object.assign(r, patch); derive(key, r); validate(key, r, false);
     save(key, rows); console.log(`${a3} updated: ${Object.keys(patch).join(', ')}`);
+    if (key === 'defects' && ['Verified', 'Submitted'].includes(r.status)) console.log(`evidence pack: ${path.relative(ROOT, buildPack(r, T))}`);
     break;
   }
   case 'get': {
@@ -213,25 +359,7 @@ switch (cmd) {
   }
   case 'stats': {
     const testers = ['A', 'B'].filter((t) => fs.existsSync(path.join(RUN, t)));
-    const all = (k) => testers.flatMap((t) => load(k, t));
-    const risks = load('risks'); const cases = all('cases'); const defects = all('defects'); const nfr = all('nfr'); const ai = all('ailog');
-    const c = (arr, f) => arr.filter(f).length;
-    const passed = c(cases, (r) => r.status === 'Passed'); const failed = c(cases, (r) => r.status === 'Failed');
-    const sub = defects.filter((d) => d.status === 'Submitted');
-    const ver = defects.filter((d) => d.status === 'Verified');
-    const lines = [
-      `Data from: ${testers.map((t) => `run/${t}`).join(', ') || '(none)'} + run/risks.csv  (${myt()} MYT)`,
-      `Risks identified: ${risks.length} (High ${c(risks, (r) => r.priority === 'High')}, Medium ${c(risks, (r) => r.priority === 'Medium')}, Low ${c(risks, (r) => r.priority === 'Low')})`,
-      `  Tested in depth ${c(risks, (r) => r.coverage === 'Tested in depth')}, Smoke only ${c(risks, (r) => r.coverage === 'Smoke only')}, Not tested ${c(risks, (r) => r.coverage === 'Not tested')}, coverage not set ${c(risks, (r) => !r.coverage)}`,
-      `Test cases designed: ${cases.length}`,
-      `  Passed ${passed}, Failed ${failed}, Blocked ${c(cases, (r) => r.status === 'Blocked')}, Not run ${c(cases, (r) => r.status === 'Not Run' || !r.status)}`,
-      `  Pass rate (Passed/(Passed+Failed)): ${passed + failed ? ((passed / (passed + failed)) * 100).toFixed(1) + '%' : 'N/A'}`,
-      `Defects submitted: ${sub.length} (Critical ${c(sub, (d) => d.severity === 'Critical')}, High ${c(sub, (d) => d.severity === 'High')}, Medium ${c(sub, (d) => d.severity === 'Medium')}, Low ${c(sub, (d) => d.severity === 'Low')})`,
-      `  Verified but NOT yet submitted: ${ver.length}${ver.length ? ' -> ' + ver.map((d) => d.defect_id).join(', ') : ''}`,
-      `  Still Suspected: ${c(defects, (d) => d.status === 'Suspected')}; Dropped after review: ${c(defects, (d) => /Dropped|Duplicate/.test(d.status))}`,
-      `Non-functional findings: ${c(nfr, (r) => r.verdict === 'Finding')} (rows ${nfr.length}, unreviewed ${c(nfr, (r) => !r.verdict)})`,
-      `AI interactions logged: ${ai.length}`,
-    ];
+    const lines = statsLines();
     console.log(lines.join('\n'));
     if (testers.length < 2) console.log(`NOTE: only tester ${testers.join('') || '-'} data on this machine. Team totals come from the shared Google Sheet Stats tab.`);
     break;
@@ -242,7 +370,9 @@ switch (cmd) {
     const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
     const dest = path.join(ROOT, 'archive', stamp); fs.mkdirSync(dest, { recursive: true });
     if (fs.existsSync(RUN)) fs.renameSync(RUN, path.join(dest, 'run'));
-    for (const t of ['A', 'B']) for (const f of ['events.jsonl', 'state.json']) { const p = path.join(ROOT, '.tb', t, f); if (fs.existsSync(p)) { fs.mkdirSync(path.join(dest, 'tb', t), { recursive: true }); fs.renameSync(p, path.join(dest, 'tb', t, f)); } }
+    const tbDir = path.join(ROOT, '.tb');
+    const ids = fs.existsSync(tbDir) ? fs.readdirSync(tbDir).filter((d) => /^[AB](-[a-z0-9]+)?$/.test(d)) : [];
+    for (const t of ids) for (const f of ['events.jsonl', 'state.json', 'net.jsonl']) { const p = path.join(tbDir, t, f); if (fs.existsSync(p)) { fs.mkdirSync(path.join(dest, 'tb', t), { recursive: true }); fs.renameSync(p, path.join(dest, 'tb', t, f)); } }
     console.log(`archived to ${path.relative(ROOT, dest)}. Browser profiles (logins) kept. Next: ./tb init <SUT_URL>`);
     break;
   }

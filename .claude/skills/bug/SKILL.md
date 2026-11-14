@@ -1,25 +1,36 @@
 ---
 name: bug
-description: Defect pipeline for a suspected problem - skeptical triage, two clean reproductions with tb, severity, rec record, and a paste-ready report queued for human submission (GATE 2). Usage /bug "<what looked wrong>" [TC-id]
+description: Defect pipeline - skeptical triage, then two independent reproductions dispatched in parallel to repro-worker sub-agents in separate tb worker browsers while you keep testing; evidence and the report update live (run/LIVE.md), and the paste-ready report is queued for human submission (GATE 2). Usage /bug "<what looked wrong>" [TC-id]
 ---
 Invalid or enhancement-type reports lose points, so be your own harshest reviewer.
 
-1. Triage before spending time:
-   - Is there a basis for the expected behaviour (requirement, on-screen rule, clear convention)? If it is only "would be nicer", it is an enhancement: drop it (note it for the report's suggestions).
-   - Could it be our own data, timing, network, the blocked out-of-scope navigation, or our viewport emulation? Rule these out. A visual defect seen only through `tb viewport` should be re-checked with `node automation/run-checks.mjs --checks shots` (real mobile emulation) before it is called a defect.
-   - Duplicate? `./rec list defects --all`, and ask the human whether the other tester has it (one line).
-2. Log it right away: `./rec add defects '{"title":"[Feature] what is wrong when/after condition","feature":"...","severity":"...","steps":"(pending)","expected":"...","actual":"...","evidence":"<shot path>","case_id":"...","risk_id":"...","repro":"1/1"}'` (status is Suspected).
-3. Reproduce twice from a clean start, as separate marks:
-   `./tb mark "<D-id> repro 1"`, then `./tb open <start page>`, perform the minimal steps, and note the outcome. Repeat with `"<D-id> repro 2"`. If it is intermittent, try up to 5 times and report "x/5".
-   Minimise the steps: remove any step that is not needed to trigger the problem.
-4. Build the report from evidence, not memory:
-   - steps: `./tb steps --mark "<D-id> repro 2"` (exact values, button names)
-   - console/HTTP: `./tb errors --mark "<D-id> repro 2"`
-   - API evidence when relevant: `./tb net --mark "<D-id> repro 2"`. Quote the exact field ("API returns price 45.0, UI shows RM 40.00"). Never paste tokens; the tool redacts known secret fields, but check anyway.
-   - final screenshot: `./tb shot <D-id>-actual`. For a visual defect, READ the screenshot and describe exactly what is wrong and where. A Layout warning alone is never evidence.
-   Severity (impact on user/business): Critical = core function unusable, data loss, money or security impact, no workaround; High = major function wrong, hard workaround; Medium = partly wrong, workaround exists; Low = cosmetic. Priority separately (P1/P2/P3). No root-cause claims ("Root cause not investigated").
-5. If reproduced at least 2 times: `./rec update defects <D-id> '{"status":"Verified","repro":"2/2","steps":"...","evidence":"..."}'`.
-   If it is not reproducible or not a defect: status "Dropped-not a bug" with the reason in actual.
-6. GATE 2 (do not wait): write `run/$TB_TESTER/bugs/<D-id>.md` in the exact format of `competition-day/05-bug-writing-guide.md` (Title, Severity + reason, Priority, Environment with browser version and MYT time, Preconditions, Steps, Expected + basis, Actual with exact text/numbers, Reproducibility, Impact, Evidence file names, Related TC/R ids). Tell the human in one line: "D-A03 ready to submit: run/A/bugs/D-A03.md (High)". Continue testing.
-   When the human replies with the platform ID: `./rec update defects <D-id> '{"status":"Submitted","platform_id":"<id>","reviewed_by":"AI+<A|B>"}'`.
-7. `./rec add ailog '{"prompt_id":"P5","activity":"Defect triage and report <D-id>","input_summary":"suspected: ...","output_summary":"Verified/Dropped, severity ...","how_verified":"reproduced 2/2 via tb marks; human reviewed before submission","used_in":"Defect report"}'`.
+## 1. Triage (you, about 1 minute)
+- Is there a basis for the expected behaviour (requirement, on-screen rule, clear convention)? If it is only "would be nicer", it is an enhancement: drop it (note it for the report's suggestions).
+- Could it be our own data, timing, network, the blocked out-of-scope navigation, or our viewport emulation? Rule these out. A visual defect seen only through `tb viewport` must be re-checked with `node automation/run-checks.mjs --checks shots` (real mobile emulation) before it is called a defect.
+- Duplicate? `./rec list defects --all`, and ask the human whether the other tester has it (one line).
+
+## 2. Log it at once (status Suspected, so it shows on the live board)
+`./rec add defects '{"title":"[Feature] what is wrong when/after condition","feature":"...","severity":"...","steps":"(pending)","expected":"...","actual":"...","evidence":"<shot path>","case_id":"...","risk_id":"...","repro":"1/1"}'`
+Get the finder's steps with `./tb steps --mark <the mark you were in>`, and minimise them (remove every step that is not needed).
+
+## 3. Reproduce in parallel, without stopping your own testing
+- Workers: `./tb workers` (reuse them if they are running), otherwise `./tb fork 2`.
+- Shared-state check: if the steps change account state (cart, order, profile, post, booking), two workers on the same account interfere. Then either run ONE repro-worker at a time, or have the human give a second account (`/roles`).
+- In ONE message, launch two `repro-worker` sub-agents in the background (w1 and w2). Each prompt contains: the worker id, the defect id, the start page, the minimal numbered steps with exact test data, the expected result with its basis, and the finder's actual result. Guard-word steps need an explicit `--why` reason in the prompt.
+- Meanwhile continue your current test case or charter in your main browser. Do not wait.
+- Their streamed notes (`run/notes/<D-id>.md`) and the defect row appear on `run/LIVE.md` as they happen.
+
+## 4. Decide when both report
+- Both REPRODUCED: `./rec update defects <D-id> '{"status":"Verified","defect_type":"<Functional|Calculation|Validation|Data consistency|Error handling|Access control|Visual/Layout|Usability|Performance|Accessibility|Compatibility|Security (passive)>","location":"<page path - area>","repro":"3/3","steps":"<numbered steps from the cleaner worker run>","evidence":"<finder shot>; <w1 shot>; <w2 shot>"}'` (finder + 2 independent runs = 3/3).
+- One reproduced: run a third attempt yourself or with one worker; report "x/y" honestly, and mark it intermittent if it stays inconsistent.
+- None reproduced: compare the steps. A step difference may be the real trigger, so retry once with the finder's exact steps. Still nothing: status "Dropped-not a bug", with the reason in actual.
+- DevTools (F12) evidence, required for every Verified defect: `./tb --as <w> devtools --mark "<D-id> repro <w>" --save <D-id>` from the cleaner worker run (or your own mark). This writes `run/$TB_TESTER/bugs/evidence/<D-id>-devtools-<identity>.md` with Console (errors, source file:line, stack) and Network (method, URL with evidence parameters, status, duration, request payload, response). Quote the decisive lines in the report; the full block goes in the evidence file. If Console and Network are both clean, say so: "no console errors; all requests 200" is evidence too (a silent wrong result).
+- Evidence to quote: steps from `tb steps`; console/HTTP from the workers' errors output; API fields ("API returns price 45.0, UI shows RM 40.00"); the final screenshot. For a visual defect, describe exactly what is wrong and where; a Layout warning alone is never evidence. Never paste tokens.
+- Severity (impact on the user or business): Critical = core function unusable, data loss, money or security impact, no workaround; High = major function wrong, hard workaround; Medium = partly wrong, workaround exists; Low = cosmetic. Priority separately (P1/P2/P3). No root-cause claims ("Root cause not investigated").
+
+## 5. GATE 2 (do not wait)
+Write `run/$TB_TESTER/bugs/<D-id>.md` in the exact format of `competition-day/05-bug-writing-guide.md` (Title, Severity + reason, Priority, Environment with browser version and MYT time, Preconditions, Steps, Expected + basis, Actual with exact text/numbers, Reproducibility "3/3 (finder + 2 independent browser sessions)", Impact, **DevTools evidence** (the 2-5 decisive Console/Network lines, copied verbatim from `tb devtools`), Evidence file names (screenshot + devtools .md), Related TC/R ids). The board lists it under "Waiting for a human to submit". Then `./rec pack <D-id>` (re)builds `run/$TB_TESTER/bugs/<D-id>/evidence-pack.md`, which collects location, type, severity, steps, independent repros, DevTools Console/Network, screenshots and the report. It is also built automatically at Verified; run it again after writing report.md. Then `./board sync`. Tell the human in one line: "D-A03 ready to submit: run/A/bugs/D-A03/evidence-pack.md (High, 3/3)". Continue testing.
+When the human replies with the platform ID: `./rec update defects <D-id> '{"status":"Submitted","platform_id":"<id>","reviewed_by":"AI+<A|B>"}'`.
+
+## 6. Log
+`./rec add ailog '{"prompt_id":"P5","activity":"Defect triage + parallel reproduction <D-id>","input_summary":"suspected: ...","output_summary":"Verified 3/3 / Dropped, severity ...","how_verified":"2 independent repro-worker sub-agents in separate browsers; human reviewed before submission","used_in":"Defect report"}'`

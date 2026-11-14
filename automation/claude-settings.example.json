@@ -3,6 +3,8 @@
     "allow": [
       "Bash(./tb:*)",
       "Bash(./rec:*)",
+      "Bash(./board:*)",
+      "Bash(gh auth status)",
       "Bash(node automation/tb.mjs:*)",
       "Bash(node automation/rec.mjs:*)",
       "Bash(node automation/run-checks.mjs:*)",
